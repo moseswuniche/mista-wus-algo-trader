@@ -1,0 +1,32 @@
+# Runtime configuration for the trading bot
+# Modify this file while the trader.py script is running to change behavior.
+
+# Target trading symbol (must match the running bot's symbol)
+symbol: BTCUSDT 
+
+# Name of the strategy class to use (must match class name in strategies/)
+strategy_name: LongShortStrategy
+
+# Parameters for the selected strategy
+# These must match the __init__ arguments of the strategy class.
+strategy_params:
+  # Parameters for LongShortStrategy
+  return_thresh: [-0.0001, 0.0001]
+  volume_thresh: [-3, 3]
+  
+  # --- Example for MACross (if strategy_name was MovingAverageCrossoverStrategy) ---
+  # fast_period: 9
+  # slow_period: 21
+  
+  # --- Example for RSIReversion ---
+  # rsi_period: 14
+  # oversold_threshold: 30
+  # overbought_threshold: 70
+  
+  # --- Example for BBReversion ---
+  # bb_period: 20
+  # bb_std_dev: 2.0
+
+# --- Optional: Add other runtime tunable parameters below ---
+# e.g., trade_units: 0.002
+# e.g., max_trades: 10 

@@ -1,0 +1,157 @@
+# Example Parameter Grids for Optimization
+# Define ranges per symbol and strategy class name
+
+BTCUSDT:
+  MovingAverageCrossoverStrategy:
+    fast_period: [5, 9, 13, 21]
+    slow_period: [21, 34, 50, 100]
+  RsiMeanReversionStrategy:
+    rsi_period: [7, 14, 21]
+    oversold_threshold: [20, 25, 30, 35]
+    overbought_threshold: [65, 70, 75, 80]
+  BollingerBandReversionStrategy:
+    bb_period: [10, 20, 30, 50]
+    bb_std_dev: [1.5, 2.0, 2.5]
+  LongShortStrategy:
+    return_thresh_low: [-0.0005, -0.0004, -0.0003, -0.0002, -0.0001] # Uses np.round in optimize.py to avoid floating point issues in YAML
+    return_thresh_high: [0.0001, 0.0002, 0.0003, 0.0004, 0.0005]
+    volume_thresh_low: [-3]
+    volume_thresh_high: [3]
+
+XRPUSDT:
+  MovingAverageCrossoverStrategy:
+    fast_period: [9, 15, 20] # Example different range
+    slow_period: [25, 50, 75]
+  RsiMeanReversionStrategy:
+    rsi_period: [10, 14]
+    oversold_threshold: [25, 30]
+    overbought_threshold: [70, 75]
+  BollingerBandReversionStrategy:
+    bb_period: [15, 20, 25]
+    bb_std_dev: [2.0]
+  LongShortStrategy: # Added for XRPUSDT
+    return_thresh_low: [-0.001, -0.0007, -0.0005, -0.0003]
+    return_thresh_high: [0.0003, 0.0005, 0.0007, 0.001]
+    volume_thresh_low: [-3]
+    volume_thresh_high: [3]
+
+ALGOUSDT:
+  MovingAverageCrossoverStrategy:
+    fast_period: [5, 10]
+    slow_period: [20, 30, 40]
+  RsiMeanReversionStrategy:
+    rsi_period: [14]
+    oversold_threshold: [28, 33]
+    overbought_threshold: [67, 72] # Example different range
+  BollingerBandReversionStrategy:
+    bb_period: [20]
+    bb_std_dev: [2.0, 2.2]
+  LongShortStrategy: # Added for ALGOUSDT
+    return_thresh_low: [-0.0012, -0.0009, -0.0006, -0.0004]
+    return_thresh_high: [0.0004, 0.0006, 0.0009, 0.0012]
+    volume_thresh_low: [-3]
+    volume_thresh_high: [3]
+
+ETHUSDT: # Added default ranges for ETHUSDT
+  MovingAverageCrossoverStrategy:
+    fast_period: [5, 9, 13, 21]
+    slow_period: [21, 34, 50, 100]
+  RsiMeanReversionStrategy:
+    rsi_period: [7, 14, 21]
+    oversold_threshold: [20, 25, 30, 35]
+    overbought_threshold: [65, 70, 75, 80]
+  BollingerBandReversionStrategy:
+    bb_period: [10, 20, 30, 50]
+    bb_std_dev: [1.5, 2.0, 2.5]
+  LongShortStrategy:
+    return_thresh_low: [-0.0005, -0.0004, -0.0003, -0.0002, -0.0001]
+    return_thresh_high: [0.0001, 0.0002, 0.0003, 0.0004, 0.0005]
+    volume_thresh_low: [-3]
+    volume_thresh_high: [3]
+
+HBARUSDT: # Added default ranges for HBARUSDT
+  MovingAverageCrossoverStrategy:
+    fast_period: [5, 9, 13, 21]
+    slow_period: [21, 34, 50, 100]
+  RsiMeanReversionStrategy:
+    rsi_period: [7, 14, 21]
+    oversold_threshold: [20, 25, 30, 35]
+    overbought_threshold: [65, 70, 75, 80]
+  BollingerBandReversionStrategy:
+    bb_period: [10, 20, 30, 50]
+    bb_std_dev: [1.5, 2.0, 2.5]
+  LongShortStrategy:
+    return_thresh_low: [-0.0005, -0.0004, -0.0003, -0.0002, -0.0001]
+    return_thresh_high: [0.0001, 0.0002, 0.0003, 0.0004, 0.0005]
+    volume_thresh_low: [-3]
+    volume_thresh_high: [3]
+
+ADAUSDT: # Added default ranges for ADAUSDT
+  MovingAverageCrossoverStrategy:
+    fast_period: [5, 9, 13, 21]
+    slow_period: [21, 34, 50, 100]
+  RsiMeanReversionStrategy:
+    rsi_period: [7, 14, 21]
+    oversold_threshold: [20, 25, 30, 35]
+    overbought_threshold: [65, 70, 75, 80]
+  BollingerBandReversionStrategy:
+    bb_period: [10, 20, 30, 50]
+    bb_std_dev: [1.5, 2.0, 2.5]
+  LongShortStrategy:
+    return_thresh_low: [-0.0005, -0.0004, -0.0003, -0.0002, -0.0001]
+    return_thresh_high: [0.0001, 0.0002, 0.0003, 0.0004, 0.0005]
+    volume_thresh_low: [-3]
+    volume_thresh_high: [3]
+
+SOLUSDT: # Added default ranges for SOLUSDT
+  MovingAverageCrossoverStrategy:
+    fast_period: [5, 9, 13, 21]
+    slow_period: [21, 34, 50, 100]
+  RsiMeanReversionStrategy:
+    rsi_period: [7, 14, 21]
+    oversold_threshold: [20, 25, 30, 35]
+    overbought_threshold: [65, 70, 75, 80]
+  BollingerBandReversionStrategy:
+    bb_period: [10, 20, 30, 50]
+    bb_std_dev: [1.5, 2.0, 2.5]
+  LongShortStrategy:
+    return_thresh_low: [-0.0005, -0.0004, -0.0003, -0.0002, -0.0001]
+    return_thresh_high: [0.0001, 0.0002, 0.0003, 0.0004, 0.0005]
+    volume_thresh_low: [-3]
+    volume_thresh_high: [3]
+
+LTCUSDT: # Added default ranges for LTCUSDT
+  MovingAverageCrossoverStrategy:
+    fast_period: [5, 9, 13, 21]
+    slow_period: [21, 34, 50, 100]
+  RsiMeanReversionStrategy:
+    rsi_period: [7, 14, 21]
+    oversold_threshold: [20, 25, 30, 35]
+    overbought_threshold: [65, 70, 75, 80]
+  BollingerBandReversionStrategy:
+    bb_period: [10, 20, 30, 50]
+    bb_std_dev: [1.5, 2.0, 2.5]
+  LongShortStrategy:
+    return_thresh_low: [-0.0005, -0.0004, -0.0003, -0.0002, -0.0001]
+    return_thresh_high: [0.0001, 0.0002, 0.0003, 0.0004, 0.0005]
+    volume_thresh_low: [-3]
+    volume_thresh_high: [3]
+
+SUIUSDT: # Added default ranges for SUIUSDT
+  MovingAverageCrossoverStrategy:
+    fast_period: [5, 9, 13, 21]
+    slow_period: [21, 34, 50, 100]
+  RsiMeanReversionStrategy:
+    rsi_period: [7, 14, 21]
+    oversold_threshold: [20, 25, 30, 35]
+    overbought_threshold: [65, 70, 75, 80]
+  BollingerBandReversionStrategy:
+    bb_period: [10, 20, 30, 50]
+    bb_std_dev: [1.5, 2.0, 2.5]
+  LongShortStrategy:
+    return_thresh_low: [-0.0005, -0.0004, -0.0003, -0.0002, -0.0001]
+    return_thresh_high: [0.0001, 0.0002, 0.0003, 0.0004, 0.0005]
+    volume_thresh_low: [-3]
+    volume_thresh_high: [3]
+
+# Add configurations for other symbols as needed 
