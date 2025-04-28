@@ -4,7 +4,7 @@ import itertools
 import argparse
 import yaml
 from pathlib import Path
-from typing import Dict, Any, List, Iterator, Tuple, Optional
+from typing import Dict, Any, List, Iterator, Tuple, Optional, cast
 import logging
 import collections.abc # Needed for recursive update check
 
@@ -40,7 +40,9 @@ def load_param_grid_from_config(config_path: str, symbol: str, strategy_class_na
 
     try:
         with open(config_file, 'r') as f:
-            full_config = yaml.safe_load(f)
+            full_config = cast(Optional[Dict[str, Any]], yaml.safe_load(f))
+            if full_config is None:
+                full_config = {}
     except yaml.YAMLError as e:
         logger.error(f"Error parsing YAML config file {config_path}: {e}")
         raise ValueError(f"Error parsing YAML config file {config_path}: {e}")
@@ -62,20 +64,24 @@ def load_param_grid_from_config(config_path: str, symbol: str, strategy_class_na
         logger.error(f"Strategy '{strategy_class_name}' not found or invalid format for symbol '{symbol}' in config: {config_path}")
         raise ValueError(f"Strategy '{strategy_class_name}' not found or invalid format for symbol '{symbol}' in config: {config_path}")
 
+    # Cast the final return value, ensuring it's the expected specific type
+    # This assumes validation confirms the structure fits Dict[str, List[Any]]
+    validated_grid = cast(Dict[str, List[Any]], strategy_grid)
+
     # Basic validation: ensure values are lists
-    for key, value in strategy_grid.items():
+    for key, value in validated_grid.items():
         if not isinstance(value, list):
             logger.error(f"Invalid format for parameter '{key}' in {symbol}/{strategy_class_name}. Expected a list, got {type(value)}.")
             raise ValueError(f"Invalid format for parameter '{key}' in {symbol}/{strategy_class_name}. Expected a list, got {type(value)}.")
         if strategy_class_name == "LongShortStrategy" and key in ["return_thresh_low", "return_thresh_high"]:
              try:
-                 strategy_grid[key] = [float(v) for v in value]
+                 validated_grid[key] = [float(v) for v in value]
              except ValueError:
                   logger.error(f"Invalid float value found for {key} in {symbol}/{strategy_class_name}.")
                   raise ValueError(f"Invalid float value found for {key} in {symbol}/{strategy_class_name}.")
 
     logger.info(f"Loaded parameter grid for {symbol} / {strategy_class_name} from {config_path}")
-    return strategy_grid
+    return validated_grid
 
 def generate_param_combinations(param_grid: Dict[str, List[Any]], strategy_class_name: str) -> Iterator[Dict[str, Any]]:
     """Generates parameter combinations for grid search from a loaded grid."""
@@ -259,12 +265,18 @@ if __name__ == "__main__":
     parser.add_argument("-s", "--strategy", type=str, required=True,
                         choices=list(STRATEGY_MAP.keys()),
                         help="Short name of the strategy to optimize.")
-    parser.add_argument("--symbol", type=str, default="BTCUSDT", 
-                        help="Trading symbol (e.g., BTCUSDT, XRPUSDT) used for loading data and config.")
-    parser.add_argument("-f", "--file", type=str, default=None,
-                        help="Path to the historical data CSV file. If None, attempts default path based on symbol (e.g., data/BTCUSDT_1h.csv). Needs implementation.")
+    parser.add_argument("--symbol", type=str, default="BTCUSDT",
+                        help="Trading symbol (e.g., BTCUSDT) used for loading config and context.")
+    parser.add_argument("-f", "--file", type=str, required=True,
+                        help="Path to the historical data CSV file (Required).")
     parser.add_argument("--config", type=str, default="config/optimize_params.yaml",
                         help="Path to the optimization parameters YAML config file.")
+    parser.add_argument("--output-config", type=str, default="config/best_params.yaml",
+                        help="Path to save the optimized parameters YAML file.")
+    parser.add_argument("--opt-start", type=str, default=None,
+                        help="Optional start date (YYYY-MM-DD) for the optimization period. If None, uses data from the beginning.")
+    parser.add_argument("--opt-end", type=str, default=None,
+                        help="Optional end date (YYYY-MM-DD) for the optimization period. If None, uses data until the end.")
     parser.add_argument("-u", "--units", type=float, default=1.0,
                         help="Amount/Units of asset to trade.")
     parser.add_argument("-m", "--metric", type=str, default="cumulative_profit",
@@ -275,8 +287,6 @@ if __name__ == "__main__":
     parser.add_argument("--log", type=str, default="INFO", 
                         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
                         help="Set the logging level. Default: INFO")
-    parser.add_argument("--output-config", type=str, default="config/best_params.yaml",
-                        help="Path to save the optimized parameters YAML file.")
 
     args = parser.parse_args()
 
@@ -284,25 +294,38 @@ if __name__ == "__main__":
     log_level = getattr(logging, args.log.upper(), logging.INFO)
     logging.getLogger().setLevel(log_level)
 
-    if args.file is None:
-        args.file = f"data/{args.symbol}_1h.csv"
-        logger.info(f"Data file not specified, attempting default: {args.file}")
-        fallback_file = "src/trading_bots/bitcoin.csv"
-        if not Path(args.file).is_file() and args.symbol == "BTCUSDT" and Path(fallback_file).is_file():
-             args.file = fallback_file
-             logger.info(f"Default file not found, using fallback: {args.file}")
-        
     try:
         logger.info(f"Starting optimization run with args: {args}")
-        data = load_csv_data(args.file, symbol=args.symbol)
-        
-        data.sort_index(inplace=True)
+        # Load FULL dataset first using the required --file argument
+        full_data = load_csv_data(args.file, symbol=args.symbol)
+        full_data.sort_index(inplace=True)
+        logger.info(f"Loaded full dataset: {len(full_data)} rows from {full_data.index.min()} to {full_data.index.max()}")
 
+        # Slice data for optimization period if start/end dates are provided
+        opt_data = full_data
+        slice_info = "full dataset"
+        if args.opt_start or args.opt_end:
+            start_slice = pd.to_datetime(args.opt_start) if args.opt_start else None
+            end_slice = pd.to_datetime(args.opt_end) if args.opt_end else None
+            try:
+                opt_data = full_data.loc[start_slice:end_slice].copy()
+                slice_info = f"from {opt_data.index.min()} to {opt_data.index.max()}"
+                if opt_data.empty:
+                     raise ValueError(f"No data found within the specified optimization period: {args.opt_start} - {args.opt_end}")
+            except Exception as e:
+                logger.error(f"Error slicing data for optimization period ({args.opt_start} - {args.opt_end}): {e}", exc_info=True)
+                # Decide how to handle: exit or proceed with full data?
+                # For safety, let's exit if slicing fails or results in empty data
+                raise ValueError(f"Failed to slice data for optimization: {e}") 
+
+        logger.info(f"Using data slice for optimization: {len(opt_data)} rows ({slice_info})")
+        
+        # Run Optimization on the potentially sliced data
         best_params, best_result = optimize_strategy(
             strategy_short_name=args.strategy,
             config_path=args.config,
             symbol=args.symbol,
-            data=data,
+            data=opt_data, # Pass the potentially sliced data
             trade_units=args.units,
             optimization_metric=args.metric,
             commission_bps=args.commission
