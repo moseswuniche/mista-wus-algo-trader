@@ -14,7 +14,7 @@ PYTHON = .venv/bin/python
 # Define Poetry executable (assuming it's in PATH or use full path)
 POETRY = poetry
 
-.PHONY: install run lint test optimize fetch-data all clean help
+.PHONY: install run lint test optimize fetch-data forward-test all clean help
 
 # Default target
 all: install lint
@@ -44,10 +44,11 @@ test:
 ## Run strategy optimization (placeholder/example)
 optimize:
 	@echo "Running strategy optimization..."
-	# Example: Optimize MACross strategy using default bitcoin.csv
-	# Modify --strategy, --file, --units, --metric, --symbol as needed
-	# Use OPTIMIZE_ARGS make variable to pass arguments: make optimize OPTIMIZE_ARGS="--strategy RSIReversion --file data/ALGOUSDT.csv --symbol ALGOUSDT"
-	$(POETRY) run $(PYTHON) -m src.trading_bots.optimize --strategy MACross $(OPTIMIZE_ARGS)
+	# Example: Optimize MACross strategy using specific data file
+	# Modify --strategy, --file, --opt-start, --opt-end, --units, etc. as needed
+	# Use OPTIMIZE_ARGS make variable: make optimize OPTIMIZE_ARGS="--strategy RSIReversion --symbol ALGOUSDT --file data/ALGOUSDT_1h.csv --opt-start 2021-01-01 --opt-end 2022-12-31 --commission 7.5"
+	# Note: --file argument is now required for optimization.
+	$(POETRY) run $(PYTHON) -m src.trading_bots.optimize $(OPTIMIZE_ARGS)
 
 ## Fetch historical data from Binance
 fetch-data:
@@ -55,6 +56,14 @@ fetch-data:
 	# Example: Fetch default symbols (BTC, XRP, ALGO), daily, from 2017 to now
 	# Modify args as needed: make fetch-data FETCH_ARGS="--symbols ETHUSDT --interval 1h --start 2020-01-01"
 	$(POETRY) run $(PYTHON) -m src.trading_bots.fetch_data $(FETCH_ARGS)
+
+## Run simulated forward test on historical data
+forward-test:
+	@echo "Running simulated forward test..."
+	# Example: Test MACross strategy for BTCUSDT from 2023-01-01 onwards
+	# Requires parameters in config/best_params.yaml (or specified by --param-config)
+	# Modify --strategy, --symbol, --param-config, --file, --fwd-start, --fwd-end, --units, --commission as needed
+	$(POETRY) run $(PYTHON) -m src.trading_bots.forward_test --strategy MACross --symbol BTCUSDT --fwd-start 2023-01-01 $(FWD_ARGS)
 
 ## Clean up Python bytecode and caches
 clean:
@@ -73,6 +82,7 @@ help:
 	@echo "  make test       - Run tests (placeholder)"
 	@echo "  make optimize   - Run strategy optimization (use OPTIMIZE_ARGS=... for options)"
 	@echo "  make fetch-data - Fetch historical data from Binance (use FETCH_ARGS=... for options)"
+	@echo "  make forward-test - Run simulated forward test (use FWD_ARGS=... for options)"
 	@echo "  make all        - Install dependencies and run linter (default)"
 	@echo "  make clean      - Remove Python bytecode and cache files"
 	@echo "  make help       - Show this help message" 
