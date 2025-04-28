@@ -27,7 +27,7 @@ END_DATE   ?= 2021-01-01
 COMMISSION ?= 7.5      # Commission in basis points (e.g., 7.5 for 0.075%)
 
 # Forward Test Period
-FWD_START_DATE ?= 2021-01-01
+FWD_START_DATE ?= 2023-01-01
 FWD_END_DATE   ?= 2025-04-27
 
 # Common Backtest/Optimization Parameters
@@ -42,7 +42,7 @@ FWD_ARGS      ?= --strategy RSIReversion --symbol BTCUSDT --file data/1h/BTCUSDT
 FETCH_ARGS    ?= # Default empty, provide args like --symbols BTCUSDT --interval 1h
 TRADER_ARGS   ?= --strategy LongShort --symbol BTCUSDT --interval 1m --units 0.001 --testnet # Default example
 
-.PHONY: install run lint test optimize optimize-batch fetch-data forward-test forward-test-batch all clean help trader
+.PHONY: install run lint test optimize optimize-batch fetch-data forward-test forward-test-batch all clean help trader analyze-trades analyze-details format
 
 # Default target
 all: install lint
@@ -63,43 +63,48 @@ lint:
 	@echo "Running mypy for static type checking..."
 	$(POETRY) run mypy src
 
+## Run Black code formatter
+format:
+	@echo "Running black code formatter on src directory..."
+	$(POETRY) run black src
+
 ## Run tests (placeholder)
 test:
 	@echo "Running tests... (No tests implemented yet)"
 
 ## Run strategy optimization (single run)
 optimize:
-	@echo "Running strategy optimization (use OPTIMIZE_ARGS=...)"
-	# Example: make optimize OPTIMIZE_ARGS="--strategy RSIReversion --symbol ALGOUSDT --file data/1h/ALGOUSDT_1h.csv --opt-start 2021-01-01 --opt-end 2022-12-31 --commission 7.5 --metric sharpe_ratio --balance 5000 --save-details"
+	@echo "Running strategy optimization (use OPTIMIZE_ARGS=... and -p N for parallel backtests)"
+	# Example: make optimize OPTIMIZE_ARGS="--strategy RSIReversion --symbol ALGOUSDT --file data/1h/ALGOUSDT_1h.csv --opt-start 2021-01-01 --opt-end 2022-12-31 --commission 7.5 --metric sharpe_ratio --balance 5000 --save-details -p 6"
 	$(POETRY) run $(PYTHON_CMD) -m src.trading_bots.optimize $(OPTIMIZE_ARGS)
 
 ## Run strategy optimization for multiple strategies and symbols
 optimize-batch:
-	@echo "Running batch strategy optimization..."; \
-	 echo "Strategies: $(STRATEGIES)"; \
-	 echo "Symbols   : $(SYMBOLS)"; \
-	 echo "Interval  : $(INTERVAL)"; \
-	 echo "Date Range: $(START_DATE) to $(END_DATE)"; \
-	 echo "Commission: $(COMMISSION) bps"; \
-	 echo "Balance   : $(BALANCE)"; \
-	 echo "Metric    : $(METRIC)"; \
-	 echo "SaveDetails: $(SAVE_DETAILS)"; \
-	 save_details_arg=$$(if [ "$(SAVE_DETAILS)" = "true" ]; then echo "--save-details"; else echo ""; fi); \
-	 details_file_arg=$$(if [ -n "$(DETAILS_FILE)" ]; then echo "--details-file $(DETAILS_FILE)"; else echo ""; fi); \
-	 for strategy in $(STRATEGIES); do \
-	     for symbol in $(SYMBOLS); do \
-	         file_path="data/$(INTERVAL)/$${symbol}_$(INTERVAL).csv"; \
-	         if [ -f "$${file_path}" ]; then \
-	             echo "--- Optimizing Strategy: $${strategy}, Symbol: $${symbol}, File: $${file_path} ---"; \
-	             args="--strategy $${strategy} --symbol $${symbol} --file $${file_path} --opt-start $(START_DATE) --opt-end $(END_DATE) --commission $(COMMISSION) --balance $(BALANCE) --metric $(METRIC) $${save_details_arg} $${details_file_arg}"; \
-	             echo "Running: $(POETRY) run $(PYTHON_CMD) -m src.trading_bots.optimize $${args}"; \
-	             $(POETRY) run $(PYTHON_CMD) -m src.trading_bots.optimize $${args}; \
-	         else \
-	             echo "--- Skipping Strategy: $${strategy}, Symbol: $${symbol} - File not found: $${file_path} ---"; \
-	         fi; \
-	     done; \
-	 done; \
-	 echo "Batch optimization finished."
+	@echo "Running parallel batch strategy optimization..."
+	@echo "Strategies: $(STRATEGIES)"
+	@echo "Symbols   : $(SYMBOLS)"
+	@echo "Interval  : $(INTERVAL)"
+	@echo "Date Range: $(START_DATE) to $(END_DATE)"
+	@echo "Commission: $(COMMISSION) bps"
+	@echo "Balance   : $(BALANCE)"
+	@echo "Metric    : $(METRIC)"
+	@echo "SaveDetails: $(SAVE_DETAILS)"
+	# Construct arguments for the Python script
+	save_details_arg=$$(if [ "$(SAVE_DETAILS)" = "true" ]; then echo "--save-details"; else echo ""; fi);
+	details_file_arg=$$(if [ -n "$(DETAILS_FILE)" ]; then echo "--details-file \"$(DETAILS_FILE)\""; else echo ""; fi);
+	# Execute the parallel runner script
+	$(POETRY) run python -m src.trading_bots.run_batch_optimization \
+		--strategies "$(STRATEGIES)" \
+		--symbols "$(SYMBOLS)" \
+		--interval "$(INTERVAL)" \
+		--start-date "$(START_DATE)" \
+		--end-date "$(END_DATE)" \
+		--commission $(COMMISSION) \
+		--balance $(BALANCE) \
+		--metric "$(METRIC)" \
+		$${save_details_arg} \
+		$${details_file_arg}
+	@echo "Parallel batch optimization finished."
 
 ## Fetch historical data from Binance
 fetch-data:
@@ -165,4 +170,18 @@ help:
 	@echo "                      Override vars: make forward-test-batch STRATEGIES=... SYMBOLS=... BALANCE=..."
 	@echo "  make all            - Install dependencies and run linter (default)"
 	@echo "  make clean          - Remove Python bytecode and cache files"
-	@echo "  make help           - Show this help message" 
+	@echo "  make help           - Show this help message"
+	@echo "  make analyze-trades - Analyze trade logs and generate reports/plots"
+	@echo "  make analyze-details - Analyze optimization detail summary files"
+
+# Analyze individual trade logs (_trades.csv) and generate full reports/plots
+analyze-trades:
+	@echo "--- Running Analysis on Trade Logs (results/optimize/trades/) ---"
+	$(POETRY) run python -m src.trading_bots.analyze_trades --plotting
+	@echo "--- Finished Trade Log Analysis ---"
+
+# Analyze optimization detail summaries (_optimize_details_*.csv) 
+analyze-details:
+	@echo "--- Running Analysis on Optimization Details (results/optimize/) ---"
+	$(POETRY) run python -m src.trading_bots.analyze_trades --analyze-details --plotting
+	@echo "--- Finished Optimization Detail Analysis ---" 

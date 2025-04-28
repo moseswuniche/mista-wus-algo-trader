@@ -4,12 +4,16 @@ from typing import List, Tuple
 
 from .base_strategy import Strategy
 
+
 class LongShortStrategy(Strategy):
     """
     A strategy that goes long on negative returns and short on positive returns,
     filtered by volume change.
     """
-    def __init__(self, return_thresh: Tuple[float, float], volume_thresh: Tuple[float, float]) -> None:
+
+    def __init__(
+        self, return_thresh: Tuple[float, float], volume_thresh: Tuple[float, float]
+    ) -> None:
         """
         Initializes the LongShortStrategy.
 
@@ -46,4 +50,4 @@ class LongShortStrategy(Strategy):
         position.loc[cond1 & cond2] = 1
         position.loc[cond3 & cond2] = -1
 
-        return position 
+        return position

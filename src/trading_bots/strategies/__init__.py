@@ -5,9 +5,9 @@ from .rsi_reversion_strategy import RsiMeanReversionStrategy
 from .bb_reversion_strategy import BollingerBandReversionStrategy
 
 __all__ = [
-    'Strategy',
-    'LongShortStrategy',
-    'MovingAverageCrossoverStrategy',
-    'RsiMeanReversionStrategy',
-    'BollingerBandReversionStrategy'
-] 
+    "Strategy",
+    "LongShortStrategy",
+    "MovingAverageCrossoverStrategy",
+    "RsiMeanReversionStrategy",
+    "BollingerBandReversionStrategy",
+]

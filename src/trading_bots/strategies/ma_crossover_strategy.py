@@ -3,12 +3,14 @@ from typing import Tuple
 
 from .base_strategy import Strategy
 
+
 class MovingAverageCrossoverStrategy(Strategy):
     """
     A trend-following strategy based on the crossover of two Exponential Moving Averages (EMAs).
     Goes long when the fast EMA crosses above the slow EMA.
     Goes short when the fast EMA crosses below the slow EMA.
     """
+
     def __init__(self, fast_period: int = 9, slow_period: int = 21) -> None:
         """
         Initializes the MovingAverageCrossoverStrategy.
@@ -17,7 +19,12 @@ class MovingAverageCrossoverStrategy(Strategy):
             fast_period: The lookback period for the fast EMA.
             slow_period: The lookback period for the slow EMA.
         """
-        if not isinstance(fast_period, int) or not isinstance(slow_period, int) or fast_period <= 0 or slow_period <= 0:
+        if (
+            not isinstance(fast_period, int)
+            or not isinstance(slow_period, int)
+            or fast_period <= 0
+            or slow_period <= 0
+        ):
             raise ValueError("EMA periods must be positive integers.")
         if fast_period >= slow_period:
             raise ValueError("Fast EMA period must be less than Slow EMA period.")
@@ -41,10 +48,10 @@ class MovingAverageCrossoverStrategy(Strategy):
         Returns:
             A pandas Series containing the position signal (1 for long, -1 for short, 0 for neutral).
         """
-        if 'Close' not in data.columns:
+        if "Close" not in data.columns:
             raise ValueError("Input DataFrame must contain a 'Close' column.")
 
-        close_prices = data['Close']
+        close_prices = data["Close"]
 
         # Calculate EMAs
         ema_fast = self._calculate_ema(close_prices, self.fast_period)
@@ -62,9 +69,11 @@ class MovingAverageCrossoverStrategy(Strategy):
 
         # Signals are only valid after both EMAs have enough data
         first_valid_index = max(self.fast_period, self.slow_period)
-        position[:first_valid_index] = 0 # Set initial positions before enough data to 0
+        position[:first_valid_index] = (
+            0  # Set initial positions before enough data to 0
+        )
 
         # Fill any remaining NaNs (shouldn't be any with min_periods, but just in case)
         position.fillna(0, inplace=True)
 
-        return position.astype(int) 
+        return position.astype(int)

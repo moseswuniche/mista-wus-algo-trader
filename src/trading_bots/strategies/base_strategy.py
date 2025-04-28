@@ -2,10 +2,12 @@ from abc import ABC, abstractmethod
 import pandas as pd
 from typing import Dict, Any
 
+
 class Strategy(ABC):
     """
     Abstract base class for trading strategies.
     """
+
     def __init__(self, **kwargs: Any) -> None:
         """
         Initializes the strategy with given parameters.
@@ -23,4 +25,4 @@ class Strategy(ABC):
         Returns:
             A pandas Series containing the position signal (1 for long, -1 for short, 0 for neutral).
         """
-        pass 
+        pass

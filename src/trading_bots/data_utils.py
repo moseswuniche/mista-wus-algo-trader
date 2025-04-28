@@ -3,8 +3,11 @@ import logging
 from typing import Optional
 
 # Setup basic logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
+
 
 def load_csv_data(file_path: str, symbol: Optional[str] = None) -> pd.DataFrame:
     """
@@ -30,24 +33,26 @@ def load_csv_data(file_path: str, symbol: Optional[str] = None) -> pd.DataFrame:
         print(f"Error: Data file not found at {file_path}")
         raise
 
-    required_columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
+    required_columns = ["Date", "Open", "High", "Low", "Close", "Volume"]
     if not all(col in df.columns for col in required_columns):
         raise ValueError(f"CSV file must contain columns: {required_columns}")
 
     try:
         # Attempt to parse the 'Date' column - adjust format if needed
-        df['Date'] = pd.to_datetime(df['Date']) 
+        df["Date"] = pd.to_datetime(df["Date"])
     except Exception as e:
-        raise ValueError(f"Error parsing 'Date' column: {e}. Ensure it's in a recognizable format.")
+        raise ValueError(
+            f"Error parsing 'Date' column: {e}. Ensure it's in a recognizable format."
+        )
 
-    df.set_index('Date', inplace=True)
+    df.set_index("Date", inplace=True)
 
     # Ensure numeric types for OHLCV columns
-    for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
+    for col in ["Open", "High", "Low", "Close", "Volume"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
 
     # Drop rows with NaNs potentially introduced by coercion
-    df.dropna(subset=['Open', 'High', 'Low', 'Close', 'Volume'], inplace=True)
+    df.dropna(subset=["Open", "High", "Low", "Close", "Volume"], inplace=True)
 
     print(f"Loaded {len(df)} data points.")
-    return df 
+    return df
