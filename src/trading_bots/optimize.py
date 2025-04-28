@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Iterator, Tuple, Optional, cast
 import logging
 import collections.abc # Needed for recursive update check
+import math # Added for calculating combinations
 
 # Assuming strategies are accessible via this import path
 from .strategies import (
@@ -30,6 +31,9 @@ STRATEGY_MAP = {
     "RSIReversion": RsiMeanReversionStrategy,
     "BBReversion": BollingerBandReversionStrategy
 }
+
+# --- Constants for Optimization Logging ---
+PROGRESS_LOG_INTERVAL = 50 # Log progress every N combinations
 
 def load_param_grid_from_config(config_path: str, symbol: str, strategy_class_name: str) -> Dict[str, List[Any]]:
     """Loads the parameter grid for a specific symbol and strategy from the YAML config."""
@@ -119,7 +123,8 @@ def optimize_strategy(
     data: pd.DataFrame,
     trade_units: float,
     optimization_metric: str = 'cumulative_profit',
-    commission_bps: float = 0.0
+    commission_bps: float = 0.0,
+    initial_balance: float = 10000.0
 ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
     """
     Performs grid search optimization for a given strategy.
@@ -132,9 +137,10 @@ def optimize_strategy(
         trade_units: Units to trade.
         optimization_metric: The key in the backtest result to maximize.
         commission_bps: Commission fee in basis points passed to backtester.
+        initial_balance: Starting balance for backtests.
 
     Returns:
-        A tuple containing: (best_params, best_result) or (None, None) if error.
+        A tuple containing: (best_params, best_result_dict) or (None, None) if error.
     """
     if strategy_short_name not in STRATEGY_MAP:
         logger.error(f"Unknown strategy name: {strategy_short_name}. Available: {list(STRATEGY_MAP.keys())}")
@@ -150,140 +156,179 @@ def optimize_strategy(
         logger.error(f"Stopping optimization due to error loading parameter grid: {e}")
         return None, None
 
+    # --- Calculate Total Combinations for Progress Logging --- 
+    total_combinations = 1
+    for param_values in param_grid.values():
+         # Check for valid list and non-empty
+         if isinstance(param_values, list) and param_values:
+              total_combinations *= len(param_values)
+         else:
+              # Handle empty or invalid param lists if necessary, or assume valid based on loader
+              logger.warning(f"Invalid or empty parameter list found in grid for {strategy_class_name}. Calculation might be inaccurate.")
+              total_combinations = 0 # Or handle differently
+              break 
+              
+    # Ensure total_combinations is not zero if loop completed
+    if total_combinations == 1 and not any(param_grid.values()): # Check if grid was actually empty
+         total_combinations = 0
+         
+    logger.info(f"--- Starting Optimization for {strategy_short_name} on {symbol} --- ")
+    logger.info(f"Total parameter combinations to test: {total_combinations}")
+    logger.info(f"Optimizing metric: {optimization_metric}, Commission: {commission_bps} bps, Initial Balance: {initial_balance}")
+    
     param_generator = generate_param_combinations(param_grid, strategy_class_name)
 
     best_params = None
-    best_result = None
-    best_metric_value = -float('inf')
+    best_result_dict = None # Rename variable for clarity
     
+    # --- Determine if minimizing or maximizing the metric --- 
+    metrics_to_minimize = ['max_drawdown']
+    minimize = optimization_metric in metrics_to_minimize
+    best_metric_value = float('inf') if minimize else -float('inf')
+    comparison_operator = np.less if minimize else np.greater # Use np functions for comparison
+
+    logger.info(f"Optimization mode: {'Minimizing' if minimize else 'Maximizing'} {optimization_metric}")
+
     count = 0
-    results_list = []
+    results_list = [] # Store all results for detailed saving
 
-    logger.info(f"\n--- Starting Optimization for {strategy_short_name} on {symbol} --- ")
-    logger.info(f"Optimizing metric: {optimization_metric}, Commission: {commission_bps} bps")
-
-    for params in param_generator:
+    for params_combo in param_generator:
         count += 1
-        logger.debug(f"\nTesting combination {count}: {params}")
+        # Separate strategy params from SL/TP/TSL params
+        strategy_params = params_combo.copy()
+        sl_pct = strategy_params.pop('stop_loss_pct', None)
+        tp_pct = strategy_params.pop('take_profit_pct', None)
+        tsl_pct = strategy_params.pop('trailing_stop_loss_pct', None)
+        
+        logger.debug(f"Testing combo {count}/{total_combinations}: StratP={strategy_params}, SL={sl_pct}, TP={tp_pct}, TSL={tsl_pct}")
         try:
-            strategy_instance = strategy_class(**params)
-            result = run_backtest(data, strategy_instance, trade_units, commission_bps=commission_bps)
-            results_list.append({'params': params, **result})
-
-            current_metric_value = result.get(optimization_metric)
-
-            if current_metric_value is None:
-                logger.warning(f"Metric '{optimization_metric}' not found in backtest results for params {params}. Skipping.")
-                continue
+            strategy_instance = strategy_class(**strategy_params)
+            result_dict = run_backtest(
+                data=data, 
+                strategy=strategy_instance, 
+                units=trade_units, 
+                initial_balance=initial_balance,
+                commission_bps=commission_bps,
+                stop_loss_pct=sl_pct,
+                take_profit_pct=tp_pct,
+                trailing_stop_loss_pct=tsl_pct
+            )
             
-            if pd.isna(current_metric_value):
-                 logger.warning(f"Metric '{optimization_metric}' is NaN for params {params}. Skipping.")
+            full_params_tested = params_combo 
+            # Add params to the result dict before appending to list
+            result_dict_with_params = {'params': full_params_tested, **result_dict} 
+            results_list.append(result_dict_with_params)
+
+            current_metric_value = result_dict.get(optimization_metric)
+
+            if current_metric_value is None or pd.isna(current_metric_value):
+                 logger.warning(f"Metric '{optimization_metric}' missing or NaN for params {full_params_tested}. Skipping.")
                  continue
 
-            if current_metric_value > best_metric_value:
+            # Compare using the chosen operator (np.less or np.greater)
+            if comparison_operator(current_metric_value, best_metric_value):
                 best_metric_value = current_metric_value
-                best_params = params
-                best_result = result
-                logger.info(f"*** New best result found (Combo {count}): {optimization_metric} = {best_metric_value:.4f} ***")
+                best_params = full_params_tested 
+                best_result_dict = result_dict # Store the result dict without params
+                # Log the parameters *without* SL/TP/TSL if they are None, for brevity
+                log_params = {k: v for k, v in best_params.items() if v is not None}
+                logger.info(f"*** New best result (Combo {count}/{total_combinations}): {optimization_metric} = {best_metric_value:.4f} with params {log_params} ***")
 
         except Exception as e:
-            logger.error(f"Error during backtest for params {params}: {e}", exc_info=True)
+            logger.error(f"Error during backtest for params {full_params_tested}: {e}", exc_info=True)
             continue
             
-    logger.info(f"\n--- Optimization Finished for {strategy_short_name} on {symbol} --- ")
+        if total_combinations > 0 and count % PROGRESS_LOG_INTERVAL == 0:
+            logger.info(f"Progress: Tested {count} / {total_combinations} combinations...")
+            
+    logger.info(f"--- Optimization Finished for {strategy_short_name} on {symbol} --- ")
     logger.info(f"Tested {count} parameter combinations.")
     if best_params:
-        if strategy_class_name == "LongShortStrategy":
-            printable_params = best_params.copy()
-            rt = printable_params.pop('return_thresh')
-            vt = printable_params.pop('volume_thresh')
-            printable_params['return_thresh_low'] = rt[0]
-            printable_params['return_thresh_high'] = rt[1]
-            printable_params['volume_thresh_low'] = vt[0]
-            printable_params['volume_thresh_high'] = vt[1]
-        else:
-            printable_params = best_params
-
+        printable_best_params = adjust_params_for_printing(best_params, strategy_class_name)
         logger.info(f"Best {optimization_metric}: {best_metric_value:.4f}")
-        logger.info(f"Best parameters: {printable_params}")
+        logger.info(f"Best parameters (incl. SL/TP/TSL): {printable_best_params}")
     else:
         logger.warning("No valid results found during optimization.")
 
-    return best_params, best_result
+    # Return the best params (full combo), its result dict, and the full list of results
+    return best_params, best_result_dict, results_list
+
+def adjust_params_for_printing(params: Dict[str, Any], strategy_class_name: str) -> Dict[str, Any]:
+    printable_params = params.copy()
+    if strategy_class_name == "LongShortStrategy":
+        if 'return_thresh' in printable_params:
+            rt = printable_params.pop('return_thresh')
+            printable_params['return_thresh_low'] = rt[0]
+            printable_params['return_thresh_high'] = rt[1]
+        if 'volume_thresh' in printable_params:
+             vt = printable_params.pop('volume_thresh')
+             printable_params['volume_thresh_low'] = vt[0]
+             printable_params['volume_thresh_high'] = vt[1]
+    # Add adjustments for other strategies if needed
+    return printable_params
 
 def save_best_params(output_config_path: str, symbol: str, strategy_class_name: str, best_params: Dict[str, Any]):
-    """Saves the best parameters found to the specified YAML output file."""
+    """Saves the best parameters found (incl. SL/TP/TSL) to the specified YAML output file."""
+    if not best_params:
+        logger.warning("No best parameters found to save.")
+        return
+        
     output_file = Path(output_config_path)
-    output_file.parent.mkdir(parents=True, exist_ok=True) # Ensure directory exists
+    output_file.parent.mkdir(parents=True, exist_ok=True) 
 
     full_results = {}
     if output_file.is_file():
         try:
             with open(output_file, 'r') as f:
-                full_results = yaml.safe_load(f)
-                if full_results is None: # Handle empty file
-                    full_results = {}
-                if not isinstance(full_results, dict):
-                     logger.warning(f"Existing output file {output_config_path} has invalid format. Overwriting.")
-                     full_results = {}
+                full_results = yaml.safe_load(f) or {}
         except Exception as e:
-            logger.error(f"Error reading existing output file {output_config_path}: {e}. Will attempt to overwrite.", exc_info=True)
+            logger.error(f"Error reading existing results file {output_file}: {e}. Will overwrite.")
             full_results = {}
+            
+    # Adjust LongShortStrategy params back to low/high format before saving
+    params_to_save = adjust_params_for_printing(best_params, strategy_class_name)
 
-    # Navigate or create structure
+    # Update nested dictionary structure
     if symbol not in full_results:
         full_results[symbol] = {}
-    if not isinstance(full_results[symbol], dict):
-        logger.warning(f"Overwriting non-dictionary entry for symbol {symbol} in output file.")
-        full_results[symbol] = {}
-        
-    # Prepare params for saving (handle LongShort tuple split)
-    params_to_save = best_params.copy()
-    if strategy_class_name == "LongShortStrategy":
-        if 'return_thresh' in params_to_save:
-            rt_low, rt_high = params_to_save.pop('return_thresh')
-            params_to_save['return_thresh_low'] = rt_low
-            params_to_save['return_thresh_high'] = rt_high
-        if 'volume_thresh' in params_to_save:
-             vt_low, vt_high = params_to_save.pop('volume_thresh')
-             params_to_save['volume_thresh_low'] = vt_low
-             params_to_save['volume_thresh_high'] = vt_high
-             
-    # Store the best params for this specific strategy under the symbol
     full_results[symbol][strategy_class_name] = params_to_save
-    logger.info(f"Saving best parameters for {symbol} / {strategy_class_name} to {output_config_path}")
 
     try:
         with open(output_file, 'w') as f:
-            yaml.dump(full_results, f, default_flow_style=None, sort_keys=False)
-        logger.info(f"Best parameters saved successfully to {output_config_path}.")
+            yaml.dump(full_results, f, indent=2, default_flow_style=False)
+        logger.info(f"Best parameters saved to: {output_file}")
     except Exception as e:
-        logger.error(f"Error writing best parameters to {output_config_path}: {e}", exc_info=True)
+        logger.error(f"Error writing best parameters to {output_file}: {e}", exc_info=True)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Optimize Trading Strategy Parameters")
+    parser = argparse.ArgumentParser(description="Run Strategy Optimization")
     parser.add_argument("-s", "--strategy", type=str, required=True,
                         choices=list(STRATEGY_MAP.keys()),
                         help="Short name of the strategy to optimize.")
-    parser.add_argument("--symbol", type=str, default="BTCUSDT",
-                        help="Trading symbol (e.g., BTCUSDT) used for loading config and context.")
-    parser.add_argument("-f", "--file", type=str, required=True,
-                        help="Path to the historical data CSV file (Required).")
+    parser.add_argument("--symbol", type=str, required=True,
+                        help="Trading symbol (e.g., BTCUSDT). Optimization is symbol-specific.")
     parser.add_argument("--config", type=str, default="config/optimize_params.yaml",
                         help="Path to the optimization parameters YAML config file.")
-    parser.add_argument("--output-config", type=str, default="config/best_params.yaml",
-                        help="Path to save the optimized parameters YAML file.")
+    parser.add_argument("--file", type=str, required=True, 
+                        help="Path to the historical data CSV file.")
     parser.add_argument("--opt-start", type=str, default=None,
-                        help="Optional start date (YYYY-MM-DD) for the optimization period. If None, uses data from the beginning.")
+                        help="Optional start date (YYYY-MM-DD) for the optimization period.")
     parser.add_argument("--opt-end", type=str, default=None,
-                        help="Optional end date (YYYY-MM-DD) for the optimization period. If None, uses data until the end.")
+                        help="Optional end date (YYYY-MM-DD) for the optimization period.")
     parser.add_argument("-u", "--units", type=float, default=1.0,
                         help="Amount/Units of asset to trade.")
-    parser.add_argument("-m", "--metric", type=str, default="cumulative_profit",
-                        choices=['cumulative_profit', 'final_balance', 'total_trades', 'win_rate'],
-                        help="Metric to optimize (maximize).")
+    parser.add_argument("--metric", type=str, default="cumulative_profit", 
+                        choices=['cumulative_profit', 'final_balance', 'sharpe_ratio', 'profit_factor', 'max_drawdown', 'win_rate'], 
+                        help="Metric to optimize for. Default: cumulative_profit")
     parser.add_argument("--commission", type=float, default=10.0,
                         help="Commission fee in basis points (e.g., 10 for 0.1%). Default: 10.")
+    parser.add_argument("--balance", type=float, default=10000.0, help="Initial balance for backtests.")
+    parser.add_argument("--output-params", type=str, default="config/best_params.yaml", 
+                        help="Output YAML file to save the best parameters.")
+    parser.add_argument("--save-details", action="store_true", 
+                        help="Save detailed results of all combinations to CSV.")
+    parser.add_argument("--details-file", type=str, default=None, 
+                        help="Optional path for detailed CSV results (defaults to results/optimization/...). Ignored if --save-details is not set.")
     parser.add_argument("--log", type=str, default="INFO", 
                         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
                         help="Set the logging level. Default: INFO")
@@ -321,35 +366,68 @@ if __name__ == "__main__":
         logger.info(f"Using data slice for optimization: {len(opt_data)} rows ({slice_info})")
         
         # Run Optimization on the potentially sliced data
-        best_params, best_result = optimize_strategy(
+        best_params, best_result_dict, all_results_list = optimize_strategy(
             strategy_short_name=args.strategy,
             config_path=args.config,
             symbol=args.symbol,
             data=opt_data, # Pass the potentially sliced data
             trade_units=args.units,
             optimization_metric=args.metric,
-            commission_bps=args.commission
+            commission_bps=args.commission,
+            initial_balance=args.balance
         )
 
         # --- Save Best Parameters --- 
         if best_params:
-            strategy_class = STRATEGY_MAP.get(args.strategy)
-            if strategy_class:
-                save_best_params(
-                    output_config_path=args.output_config,
-                    symbol=args.symbol,
-                    strategy_class_name=strategy_class.__name__,
-                    best_params=best_params
-                )
-            else:
-                 logger.error(f"Could not find strategy class for '{args.strategy}' to save results.")
+            strategy_class = STRATEGY_MAP[args.strategy]
+            strategy_class_name = strategy_class.__name__
+            save_best_params(
+                output_config_path=args.output_params,
+                symbol=args.symbol,
+                strategy_class_name=strategy_class_name,
+                best_params=best_params
+            )
+            logger.info(f"Best parameters saved to: {args.output_params}")
         else:
             logger.warning("Optimization did not yield best parameters. Results file not updated.")
             
-        if best_result and isinstance(best_result.get('performance_summary'), pd.DataFrame):
+        if best_result_dict and isinstance(best_result_dict.get('performance_summary'), pd.DataFrame):
              logger.info("\n--- Performance Summary for Best Parameters ---")
-             summary_string = best_result['performance_summary'].to_string()
+             summary_string = best_result_dict['performance_summary'].to_string()
              logger.info(f"\n{summary_string}")
+
+        # --- Save Detailed Results if requested --- 
+        if args.save_details:
+            if all_results_list:
+                try:
+                    # Define default filename if not provided
+                    if args.details_file is None:
+                        details_dir = Path("results/optimization")
+                        details_dir.mkdir(parents=True, exist_ok=True)
+                        filename = f"{args.strategy}_{args.symbol}_optimize_details_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                        details_path = details_dir / filename
+                    else:
+                        details_path = Path(args.details_file)
+                        details_path.parent.mkdir(parents=True, exist_ok=True)
+
+                    # Flatten the results for CSV
+                    flat_results = []
+                    for res in all_results_list:
+                        row = res['params'].copy() # Start with parameters
+                        # Add other results, prefixing to avoid name collisions if needed
+                        for k, v in res.items():
+                            if k != 'params' and k!= 'performance_summary' and k != 'equity_curve': # Exclude complex objects
+                                 row[f'result_{k}'] = v
+                        flat_results.append(row)
+                        
+                    results_df = pd.DataFrame(flat_results)
+                    results_df.to_csv(details_path, index=False)
+                    logger.info(f"Saved detailed optimization results to: {details_path}")
+                    
+                except Exception as e:
+                    logger.error(f"Error saving detailed optimization results: {e}", exc_info=True)
+            else:
+                logger.warning("Detailed results requested, but no results were generated during optimization.")
 
     except FileNotFoundError as fnf:
         logger.error(f"File Not Found: {fnf}", exc_info=True)
@@ -361,4 +439,4 @@ if __name__ == "__main__":
         import traceback
         logger.critical(f"An unexpected critical error occurred: {e}", exc_info=True)
     
-    logger.info("Optimization script finished.") 
+    logger.info("--- Optimization script finished. ---") 

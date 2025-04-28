@@ -131,6 +131,9 @@ data/
 # Generated Config files 
 config/best_params.yaml
 
+# Generated output results
+results/
+
 # Local environment secrets file (if used)
 .env.*
 

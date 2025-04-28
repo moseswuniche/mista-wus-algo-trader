@@ -5,14 +5,19 @@ This project contains various deployable and runtime configurable trading strate
 Features include:
 - Strategy modularity (easily add new strategies)
 - Live trading via WebSockets (`trader.py`)
-- Backtesting engine (`backtest.py`)
+- Configurable Stop Loss, Take Profit, and Trailing Stop Loss (`trader.py` + Backtests)
+- Configurable Max Cumulative Loss Stop for the bot (`trader.py`)
+- Backtesting engine with intra-bar SL/TP/TSL simulation (`backtest.py`)
+- Calculation of standard performance metrics (Profit, Win Rate, Sharpe Ratio, Max Drawdown, Profit Factor)
 - Grid search parameter optimization (`optimize.py`)
-- Simulated forward testing (`forward_test.py`)
+- Optimization based on selectable performance metrics
+- Simulated forward testing (`forward_test.py`) with HTML reports
+- Saving of detailed optimization results to CSV
 - Historical data fetching (`fetch_data.py`)
 - Type hints and MyPy checking
-- Configuration via YAML for optimization parameters
+- Configuration via YAML for optimization and runtime parameters
 - Logging
-- Runtime configuration reloading (strategy & parameters)
+- Runtime configuration reloading (strategy, parameters, SL/TP)
 
 ## Project Structure
 
@@ -22,13 +27,20 @@ Features include:
 ├── Makefile
 ├── README.md
 ├── config
-│   ├── optimize_params.yaml  # Parameter ranges for optimization (COMMITTED - edit ranges here)
-│   ├── best_params.yaml      # Stores best parameters found (IGNORED - generated)
-│   └── runtime_config.yaml   # Runtime configuration for the live trader (COMMITTED - edit for live changes)
+│   ├── optimize_params.yaml  # Parameter ranges for optimization (incl. SL/TP/TSL)
+│   ├── best_params.yaml      # Stores best parameters found (incl. SL/TP/TSL, metric) (IGNORED - generated)
+│   └── runtime_config.yaml   # Runtime configuration for the live trader (strategy, params, SL/TP)
 ├── data                      # Default directory for CSV data (IGNORED)
 │   └── ... (CSV files)
 ├── poetry.lock
 ├── pyproject.toml
+├── results                   # Default directory for generated results (IGNORED)
+│   ├── optimization          # Detailed optimization CSVs
+│   │   └── ...
+│   └── forward_test          # Forward test results
+│       ├── plots             # Equity curve plots
+│       ├── reports           # HTML reports
+│       └── trades            # Trade summary CSVs
 └── src
     └── trading_bots
         ├── __init__.py
@@ -66,60 +78,64 @@ Features include:
 
 ## Usage (Makefile)
 
-Use `make help` to see available commands.
+Use `make help` to see available commands and default variable values.
 
 *   **Install/Update Dependencies:**
     ```bash
     make install
     ```
-*   **Fetch Historical Data:** Fetches daily data for BTC, XRP, ALGO, ETH, HBAR, ADA, SOL, LTC, SUI (all USDT pairs) from 2017 to now into the `data/` directory by default.
+*   **Fetch Historical Data:**
     ```bash
-    make fetch-data
+    make fetch-data # Fetch default symbols/interval
     # Fetch hourly ETH data from 2020:
     make fetch-data FETCH_ARGS="--symbols ETHUSDT --interval 1h --start 2020-01-01"
-    # Set log level to DEBUG:
-    make fetch-data FETCH_ARGS="--log DEBUG"
     ```
-*   **Run Strategy Optimization:** Optimizes parameters using grid search based on `config/optimize_params.yaml`. Saves the best results to `config/best_params.yaml` by default.
+*   **Run Strategy Optimization:** Optimizes parameters (including optional SL/TP/TSL) using grid search based on `config/optimize_params.yaml`. Saves the best parameters to `config/best_params.yaml`. 
     ```bash
-    # Optimize MACross for BTCUSDT using daily data from 2020-01-01 to 2022-12-31
-    make optimize OPTIMIZE_ARGS="--strategy MACross --symbol BTCUSDT --file data/BTCUSDT_1d.csv --opt-start 2020-01-01 --opt-end 2022-12-31 --units 0.01 --commission 7.5"
-    # Optimize RSIReversion for ALGOUSDT using 1h data for all of 2023
-    make optimize OPTIMIZE_ARGS="--strategy RSIReversion --symbol ALGOUSDT --file data/ALGOUSDT_1h.csv --opt-start 2023-01-01 --opt-end 2023-12-31 --units 100 --metric win_rate --commission 7.5"
+    # Optimize MACross for BTCUSDT daily data, maximizing Sharpe Ratio, saving details
+    make optimize OPTIMIZE_ARGS="--strategy MACross --symbol BTCUSDT --file data/1d/BTCUSDT_1d.csv --metric sharpe_ratio --save-details --balance 10000 --commission 7.5"
+    
+    # Batch optimize RSIReversion and BBReversion for XRP/ETH hourly, minimizing Max Drawdown
+    make optimize-batch STRATEGIES="RSIReversion BBReversion" SYMBOLS="XRPUSDT ETHUSDT" INTERVAL=1h METRIC=max_drawdown START_DATE=2020-01-01 END_DATE=2022-12-31 BALANCE=25000 COMMISSION=5 SAVE_DETAILS=true
     ```
-    *   Configure parameter search ranges in `config/optimize_params.yaml`.
-    *   Use the **required** `--file` argument to specify the data file for optimization.
-    *   Use `--opt-start` and `--opt-end` (YYYY-MM-DD format) to specify the date range of the data used for optimization. If omitted, the entire dataset specified by `--file` is used.
-    *   Best parameters found are saved to the file specified by `--output-config` (default: `config/best_params.yaml`).
-    *   `--commission` is in basis points (e.g., 7.5 for 0.075%).
-*   **Run Simulated Forward Test:** Runs the backtester using parameters from a specified file (e.g., `config/best_params.yaml`) on a *different* historical data period.
+    *   Configure parameter search ranges, including `stop_loss_pct`, `take_profit_pct`, `trailing_stop_loss_pct` (use `None` to test without them), in `config/optimize_params.yaml`.
+    *   Specify the optimization target using `METRIC=` (Makefile variable) or `--metric` (`OPTIMIZE_ARGS`). Choices: `cumulative_profit`, `final_balance`, `sharpe_ratio`, `profit_factor`, `max_drawdown`, `win_rate`.
+    *   Use `SAVE_DETAILS=true` (Makefile variable) or `--save-details` (`OPTIMIZE_ARGS`) to save all tested combinations to a CSV file in `results/optimization/`.
+    *   Set initial balance using `BALANCE=` or `--balance`.
+    *   Best parameters (including SL/TP/TSL) are saved to `--output-params` (default: `config/best_params.yaml`).
+*   **Run Simulated Forward Test:** Runs the backtester using the best parameters found during optimization (from `config/best_params.yaml`) on a *different* historical data period.
     ```bash
-    # Example: Test optimized MACross for BTCUSDT on data from 2023-01-01 onwards
-    make forward-test FWD_ARGS="--strategy MACross --symbol BTCUSDT --file data/BTCUSDT_1d.csv --fwd-start 2023-01-01 --param-config config/best_params.yaml --units 0.01 --commission 7"
-    # Test optimized RSIReversion for ALGOUSDT on data from 2023-06-01 to 2023-12-31
-    make forward-test FWD_ARGS="--strategy RSIReversion --symbol ALGOUSDT --file data/ALGOUSDT_1d.csv --fwd-start 2023-06-01 --fwd-end 2023-12-31 --param-config config/best_params.yaml --units 100 --commission 7"
+    # Test optimized MACross for BTCUSDT on data from 2023-01-01 onwards
+    make forward-test FWD_ARGS="--strategy MACross --symbol BTCUSDT --file data/1d/BTCUSDT_1d.csv --fwd-start 2023-01-01 --balance 10000 --commission 7"
+    
+    # Batch test RSIReversion for multiple symbols
+    make forward-test-batch STRATEGIES="RSIReversion" SYMBOLS="BTCUSDT ETHUSDT" FWD_START_DATE=2023-01-01 BALANCE=50000
     ```
-    *   Requires optimized parameters to exist in the file specified by `--param-config`.
-    *   Uses the *full* historical data specified by `--file` and slices it based on `--fwd-start` and `--fwd-end`.
-*   **Run Live Trader (Testnet by Default):**
+    *   Requires optimized parameters (incl. SL/TP/TSL) to exist in `--param-config` (default: `config/best_params.yaml`).
+    *   Set initial balance using `BALANCE=` or `--balance`.
+    *   Generates HTML reports (with metrics and plots) in `results/forward_test/reports/`.
+*   **Run Live/Simulated Trader (Testnet by Default):**
     ```bash
-    # Run default BTCUSDT with strategy defined in runtime_config.yaml (initially LongShort)
-    make run
-    # Run with specific initial args, still monitors runtime_config.yaml for changes
-    make run RUN_ARGS="--symbol XRPUSDT --strategy MACross --units 100 --runtime-config config/my_runtime.yaml"
-    # Run using AWS Secrets Manager for keys
-    make run RUN_ARGS="--aws-secret-name my-binance-secrets --aws-region eu-west-1"
+    # Run default strategy/symbol defined in TRADER_ARGS
+    make trader 
+    # Run ETHUSDT with 5m interval, testnet, specific SL/TP/TSL/MaxLoss
+    make trader TRADER_ARGS="--symbol ETHUSDT --strategy MACross --interval 5m --units 0.01 --stop-loss 0.015 --trailing-stop-loss 0.01 --max-cum-loss 500 --testnet"
+    # Run LIVE (USE WITH EXTREME CAUTION)
+    make trader TRADER_ARGS="--symbol BTCUSDT --strategy RSIReversion --interval 1h --units 0.001 --no-testnet --stop-loss 0.02"
     ```
     *   Requires API keys (via env vars or AWS).
-    *   **Runtime Configuration:** While running, edit the file specified by `--runtime-config` (default: `config/runtime_config.yaml`) to change the `strategy_name` or `strategy_params`. The trader will check this file periodically (every 5 bars by default) and attempt to apply changes if the bot is currently flat (position = 0).
-*   **Linting:**
-    ```bash
-    make lint
-    ```
-*   **Clean:** Removes cache files.
-    ```bash
-    make clean
-    ```
+    *   Use `--stop-loss`, `--take-profit`, `--trailing-stop-loss`, `--max-cum-loss` to enable risk management.
+    *   **Runtime Configuration:** Edit the `--runtime-config` file (default: `config/runtime_config.yaml`) to change `strategy_name`, `strategy_params`, `stop_loss_pct`, `take_profit_pct`, `trailing_stop_loss_pct`, `max_cumulative_loss`. Changes are checked periodically and applied if the bot is flat.
+*   **Linting:** `make lint`
+*   **Clean:** `make clean`
+
+## Output Files
+
+*   `config/best_params.yaml`: Stores the best parameters found by `make optimize` or `make optimize-batch` for each symbol/strategy combination, including SL/TP/TSL values.
+*   `results/optimization/`: Contains detailed CSV logs of *all* combinations tested during optimization if `SAVE_DETAILS=true` is used.
+*   `results/forward_test/reports/`: Contains HTML reports summarizing forward test performance, including metrics and equity curve plots.
+*   `results/forward_test/plots/`: PNG images of equity curves from forward tests.
+*   `results/forward_test/trades/`: CSV files detailing the trades made during each forward test.
 
 ## Adding New Strategies
 
