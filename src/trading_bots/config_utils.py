@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-from typing import Optional, Dict
+from typing import Optional, Dict, cast
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ def load_secrets_from_aws(secret_name: str, region_name: str) -> Optional[Dict[s
 
         if 'SecretString' in get_secret_value_response:
             secret_string = get_secret_value_response['SecretString']
-            secrets = json.loads(secret_string)
+            secrets = cast(Dict[str, str], json.loads(secret_string))
             logger.info(f"Successfully loaded secrets from AWS: {secret_name}")
             # Expecting keys like 'api_key' and 'secret_key' within the secret JSON
             return secrets

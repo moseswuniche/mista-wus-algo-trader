@@ -7,6 +7,7 @@ Features include:
 - Live trading via WebSockets (`trader.py`)
 - Backtesting engine (`backtest.py`)
 - Grid search parameter optimization (`optimize.py`)
+- Simulated forward testing (`forward_test.py`)
 - Historical data fetching (`fetch_data.py`)
 - Type hints and MyPy checking
 - Configuration via YAML for optimization parameters
@@ -21,10 +22,10 @@ Features include:
 ├── Makefile
 ├── README.md
 ├── config
-│   ├── optimize_params.yaml  # Parameter ranges for optimization
-│   ├── best_params.yaml      # Stores best parameters found by optimization
-│   └── runtime_config.yaml   # Runtime configuration for the live trader
-├── data                      # Default directory for CSV data
+│   ├── optimize_params.yaml  # Parameter ranges for optimization (COMMITTED - edit ranges here)
+│   ├── best_params.yaml      # Stores best parameters found (IGNORED - generated)
+│   └── runtime_config.yaml   # Runtime configuration for the live trader (COMMITTED - edit for live changes)
+├── data                      # Default directory for CSV data (IGNORED)
 │   └── ... (CSV files)
 ├── poetry.lock
 ├── pyproject.toml
@@ -35,6 +36,7 @@ Features include:
         ├── data_utils.py       # Data loading utilities
         ├── fetch_data.py       # Script to fetch historical data
         ├── optimize.py         # Strategy parameter optimization script
+        ├── forward_test.py     # Script for simulated forward testing
         ├── trader.py           # Main live trading bot class & execution
         └── strategies
             ├── __init__.py
@@ -80,14 +82,25 @@ Use `make help` to see available commands.
     ```
 *   **Run Strategy Optimization:** Optimizes parameters using grid search based on `config/optimize_params.yaml`. Saves the best results to `config/best_params.yaml` by default.
     ```bash
-    # Optimize MACross for BTCUSDT using data/BTCUSDT_1d.csv
-    make optimize OPTIMIZE_ARGS="--strategy MACross --symbol BTCUSDT --file data/BTCUSDT_1d.csv --units 0.01 --commission 7"
-    # Optimize RSIReversion for ALGOUSDT, save results to different file
-    make optimize OPTIMIZE_ARGS="--strategy RSIReversion --symbol ALGOUSDT --file data/ALGOUSDT_1d.csv --units 100 --metric win_rate --commission 7 --output-config results/algo_best.yaml"
+    # Optimize MACross for BTCUSDT using daily data from 2020-01-01 to 2022-12-31
+    make optimize OPTIMIZE_ARGS="--strategy MACross --symbol BTCUSDT --file data/BTCUSDT_1d.csv --opt-start 2020-01-01 --opt-end 2022-12-31 --units 0.01 --commission 7.5"
+    # Optimize RSIReversion for ALGOUSDT using 1h data for all of 2023
+    make optimize OPTIMIZE_ARGS="--strategy RSIReversion --symbol ALGOUSDT --file data/ALGOUSDT_1h.csv --opt-start 2023-01-01 --opt-end 2023-12-31 --units 100 --metric win_rate --commission 7.5"
     ```
     *   Configure parameter search ranges in `config/optimize_params.yaml`.
+    *   Use the **required** `--file` argument to specify the data file for optimization.
+    *   Use `--opt-start` and `--opt-end` (YYYY-MM-DD format) to specify the date range of the data used for optimization. If omitted, the entire dataset specified by `--file` is used.
     *   Best parameters found are saved to the file specified by `--output-config` (default: `config/best_params.yaml`).
-    *   `--commission` is in basis points (e.g., 7 for 0.07%).
+    *   `--commission` is in basis points (e.g., 7.5 for 0.075%).
+*   **Run Simulated Forward Test:** Runs the backtester using parameters from a specified file (e.g., `config/best_params.yaml`) on a *different* historical data period.
+    ```bash
+    # Example: Test optimized MACross for BTCUSDT on data from 2023-01-01 onwards
+    make forward-test FWD_ARGS="--strategy MACross --symbol BTCUSDT --file data/BTCUSDT_1d.csv --fwd-start 2023-01-01 --param-config config/best_params.yaml --units 0.01 --commission 7"
+    # Test optimized RSIReversion for ALGOUSDT on data from 2023-06-01 to 2023-12-31
+    make forward-test FWD_ARGS="--strategy RSIReversion --symbol ALGOUSDT --file data/ALGOUSDT_1d.csv --fwd-start 2023-06-01 --fwd-end 2023-12-31 --param-config config/best_params.yaml --units 100 --commission 7"
+    ```
+    *   Requires optimized parameters to exist in the file specified by `--param-config`.
+    *   Uses the *full* historical data specified by `--file` and slices it based on `--fwd-start` and `--fwd-end`.
 *   **Run Live Trader (Testnet by Default):**
     ```bash
     # Run default BTCUSDT with strategy defined in runtime_config.yaml (initially LongShort)
@@ -117,3 +130,7 @@ Use `make help` to see available commands.
 5.  Add the new strategy class to `src/trading_bots/strategies/__init__.py` (imports and `__all__`).
 6.  Add parameter search ranges to `config/optimize_params.yaml` for the new strategy under the desired symbols.
 7.  (Optional) Add the strategy choice to the `
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
