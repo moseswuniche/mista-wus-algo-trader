@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from typing import Dict, Any
+from typing import Dict, Any, List
 import logging
 
 from .strategies.base_strategy import Strategy
@@ -48,7 +48,7 @@ def run_backtest(data: pd.DataFrame, strategy: Strategy, units: float, initial_b
     trades = positions.diff().fillna(0)
 
     # 3. Calculate P&L (Modified for detailed logging and commission)
-    trade_log = []
+    trade_log: List[Dict[str, Any]] = []
     current_pos = 0
     entry_price = 0.0
     entry_time = None
