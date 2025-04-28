@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import datetime
 import time
 import argparse
-from typing import List
+from typing import List, Optional
 import logging
 
 from binance.client import Client
@@ -24,13 +24,14 @@ DEFAULT_OUTPUT_DIR = "data"
 BINANCE_API_LIMIT = 1000 # Default limit per request
 
 
-def fetch_historical_klines(client: Client, symbol: str, interval: str, start_str: str, end_str: str = None) -> List:
+def fetch_historical_klines(client: Client, symbol: str, interval: str, start_str: str, end_str: Optional[str] = None) -> List:
     """Fetches historical klines in batches, handling API limits."""
     logger.info(f"Fetching {symbol} {interval} klines from {start_str} to {end_str or 'now'}...")
     all_klines = []
     start_dt_ms = int(datetime.strptime(start_str, '%Y-%m-%d').timestamp() * 1000)
     end_dt_ms = int(datetime.now().timestamp() * 1000) if end_str is None else int(datetime.strptime(end_str, '%Y-%m-%d').timestamp() * 1000)
     limit = BINANCE_API_LIMIT
+    total_fetched_count = 0
 
     while True:
         try:
@@ -39,7 +40,7 @@ def fetch_historical_klines(client: Client, symbol: str, interval: str, start_st
                 symbol=symbol,
                 interval=interval,
                 start_str=start_dt_ms,
-                end_str=end_dt_ms, # Pass end_str here for potential API optimization
+                end_str=end_dt_ms,
                 limit=limit
             )
             
@@ -47,14 +48,14 @@ def fetch_historical_klines(client: Client, symbol: str, interval: str, start_st
                  logger.info("No more data received for this period.")
                  break
 
+            chunk_size = len(klines)
+            total_fetched_count += chunk_size
             all_klines.extend(klines)
             
-            # Get timestamp of the last kline fetched + 1 ms to avoid overlap
-            # Use Close Time (index 6) as it marks the end of the interval
-            last_kline_close_time = klines[-1][6] 
+            last_kline_close_time = klines[-1][6]
             start_dt_ms = last_kline_close_time + 1 
             
-            logger.debug(f"Fetched {len(klines)} klines. Last timestamp: {datetime.fromtimestamp(last_kline_close_time / 1000)}. Total fetched: {len(all_klines)}")
+            logger.info(f"Fetched chunk of {chunk_size} klines. Last timestamp: {datetime.fromtimestamp(last_kline_close_time / 1000)}. Total fetched for {symbol}: {total_fetched_count}")
 
             # Respect API limits - a small delay between requests
             time.sleep(0.2)
@@ -82,14 +83,16 @@ def fetch_historical_klines(client: Client, symbol: str, interval: str, start_st
             time.sleep(5) # Wait after unexpected error
             continue # Retry 
 
-    logger.info(f"Finished fetching. Total klines received for {symbol}: {len(all_klines)}")
+    logger.info(f"Finished fetching for {symbol}. Total klines received: {len(all_klines)}")
     return all_klines
 
 def process_klines_to_dataframe(klines: List) -> pd.DataFrame:
     """Converts raw kline data to a pandas DataFrame."""
     if not klines:
+        logger.info("No klines to process into DataFrame.")
         return pd.DataFrame()
         
+    logger.info(f"Processing {len(klines)} klines into DataFrame...")
     df = pd.DataFrame(klines, columns=[
         'Open Time', 'Open', 'High', 'Low', 'Close', 'Volume',
         'Close Time', 'Quote Asset Volume', 'Number of Trades',
@@ -113,7 +116,7 @@ def process_klines_to_dataframe(klines: List) -> pd.DataFrame:
     # Sort by date
     df.sort_index(inplace=True)
     
-    print(f"Processed into DataFrame with {len(df)} rows.")
+    logger.info(f"Finished processing. DataFrame shape: {df.shape}")
     return df
 
 if __name__ == "__main__":
@@ -158,7 +161,7 @@ if __name__ == "__main__":
                 end_str=args.end
             )
 
-            if not klines: # Skip processing if fetch returned empty (e.g., invalid symbol)
+            if not klines:
                  logger.warning(f"No klines fetched for {symbol}. Skipping processing and saving.")
                  continue 
                  
@@ -167,10 +170,10 @@ if __name__ == "__main__":
 
             # Save data
             if not df.empty:
-                # Generate filename
-                interval_suffix = args.interval # Use the interval string in the filename
+                interval_suffix = args.interval
                 filename = f"{symbol}_{interval_suffix}.csv"
                 filepath = os.path.join(args.output_dir, filename)
+                logger.info(f"Saving data for {symbol} to {filepath}...")
                 df.to_csv(filepath)
                 logger.info(f"Data for {symbol} saved successfully to {filepath}")
             else:
