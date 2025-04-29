@@ -1,5 +1,5 @@
 import pandas as pd
-from typing import Tuple
+from typing import Tuple, Optional
 
 from .base_strategy import Strategy
 
@@ -9,15 +9,22 @@ class MovingAverageCrossoverStrategy(Strategy):
     A trend-following strategy based on the crossover of two Exponential Moving Averages (EMAs).
     Goes long when the fast EMA crosses above the slow EMA.
     Goes short when the fast EMA crosses below the slow EMA.
+    Optionally filters signals based on a long-term trend SMA.
     """
 
-    def __init__(self, fast_period: int = 9, slow_period: int = 21) -> None:
+    def __init__(
+        self,
+        fast_period: int = 9,
+        slow_period: int = 21,
+        trend_filter_period: Optional[int] = None,
+    ) -> None:
         """
         Initializes the MovingAverageCrossoverStrategy.
 
         Args:
             fast_period: The lookback period for the fast EMA.
             slow_period: The lookback period for the slow EMA.
+            trend_filter_period: Optional lookback period for the trend-filtering SMA. If None or 0, no filter is applied.
         """
         if (
             not isinstance(fast_period, int)
@@ -28,10 +35,21 @@ class MovingAverageCrossoverStrategy(Strategy):
             raise ValueError("EMA periods must be positive integers.")
         if fast_period >= slow_period:
             raise ValueError("Fast EMA period must be less than Slow EMA period.")
+        if trend_filter_period is not None and (
+            not isinstance(trend_filter_period, int) or trend_filter_period <= 0
+        ):
+            raise ValueError(
+                "Trend filter period must be a positive integer if provided."
+            )
 
-        super().__init__(fast_period=fast_period, slow_period=slow_period)
+        super().__init__(
+            fast_period=fast_period,
+            slow_period=slow_period,
+            trend_filter_period=trend_filter_period,
+        )
         self.fast_period = fast_period
         self.slow_period = slow_period
+        self.trend_filter_period = trend_filter_period
 
     def _calculate_ema(self, series: pd.Series, period: int) -> pd.Series:
         """Calculates Exponential Moving Average."""
@@ -40,7 +58,7 @@ class MovingAverageCrossoverStrategy(Strategy):
 
     def generate_signals(self, data: pd.DataFrame) -> pd.Series:
         """
-        Generates trading signals based on EMA crossovers.
+        Generates trading signals based on EMA crossovers, optionally filtered by trend.
 
         Args:
             data: DataFrame containing at least the 'Close' price column.
@@ -51,29 +69,48 @@ class MovingAverageCrossoverStrategy(Strategy):
         if "Close" not in data.columns:
             raise ValueError("Input DataFrame must contain a 'Close' column.")
 
-        close_prices = data["Close"]
+        df = data.copy()
+        close_prices = df["Close"]
 
         # Calculate EMAs
-        ema_fast = self._calculate_ema(close_prices, self.fast_period)
-        ema_slow = self._calculate_ema(close_prices, self.slow_period)
+        df["ema_fast"] = self._calculate_ema(close_prices, self.fast_period)
+        df["ema_slow"] = self._calculate_ema(close_prices, self.slow_period)
 
-        # Determine signal based on crossover
-        # Initialize positions with 0 (neutral)
-        position = pd.Series(index=data.index, data=0, dtype=int)
+        # Determine initial signal based on crossover
+        df["signal"] = 0
+        df.loc[df["ema_fast"] > df["ema_slow"], "signal"] = 1  # Go long
+        df.loc[df["ema_fast"] < df["ema_slow"], "signal"] = -1  # Go short
 
-        # Go long if fast EMA is above slow EMA
-        position[ema_fast > ema_slow] = 1
+        # --- Apply Trend Filter ---
+        if self.trend_filter_period is not None and self.trend_filter_period > 0:
+            # Calculate trend SMA
+            sma_trend_col = f"sma_{self.trend_filter_period}"
+            df[sma_trend_col] = close_prices.rolling(
+                window=self.trend_filter_period, min_periods=self.trend_filter_period
+            ).mean()
 
-        # Go short if fast EMA is below slow EMA
-        position[ema_fast < ema_slow] = -1
+            # Filter signals based on trend
+            # Block longs in downtrend
+            long_block_condition = (df["signal"] == 1) & (
+                close_prices < df[sma_trend_col]
+            )
+            df.loc[long_block_condition, "signal"] = 0
 
-        # Signals are only valid after both EMAs have enough data
-        first_valid_index = max(self.fast_period, self.slow_period)
-        position[:first_valid_index] = (
-            0  # Set initial positions before enough data to 0
-        )
+            # Block shorts in uptrend
+            short_block_condition = (df["signal"] == -1) & (
+                close_prices > df[sma_trend_col]
+            )
+            df.loc[short_block_condition, "signal"] = 0
+        # --- End Trend Filter ---
 
-        # Fill any remaining NaNs (shouldn't be any with min_periods, but just in case)
-        position.fillna(0, inplace=True)
+        # Signals are only valid after EMAs and trend filter (if used) have enough data
+        warmup_period = max(self.fast_period, self.slow_period)
+        if self.trend_filter_period is not None and self.trend_filter_period > 0:
+            warmup_period = max(warmup_period, self.trend_filter_period)
 
-        return position.astype(int)
+        df["signal"][:warmup_period] = 0
+
+        # Fill any remaining NaNs (e.g., from initial SMA calculation)
+        df["signal"].fillna(0, inplace=True)
+
+        return df["signal"].astype(int)

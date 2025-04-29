@@ -1,5 +1,6 @@
 import pandas as pd
-from typing import Tuple
+from typing import Tuple, Optional
+import numpy as np
 
 from .base_strategy import Strategy
 
@@ -9,7 +10,7 @@ class RsiMeanReversionStrategy(Strategy):
     A mean-reversion strategy based on the Relative Strength Index (RSI).
     Goes long when RSI enters the oversold region.
     Goes short when RSI enters the overbought region.
-    Goes neutral otherwise.
+    Optionally filters signals based on a long-term trend SMA.
     """
 
     def __init__(
@@ -17,6 +18,7 @@ class RsiMeanReversionStrategy(Strategy):
         rsi_period: int = 14,
         oversold_threshold: float = 30.0,
         overbought_threshold: float = 70.0,
+        trend_filter_period: Optional[int] = None,
     ) -> None:
         """
         Initializes the RsiMeanReversionStrategy.
@@ -25,6 +27,7 @@ class RsiMeanReversionStrategy(Strategy):
             rsi_period: The lookback period for RSI calculation.
             oversold_threshold: The RSI level below which the asset is considered oversold.
             overbought_threshold: The RSI level above which the asset is considered overbought.
+            trend_filter_period: Optional lookback period for the trend-filtering SMA. If None or 0, no filter is applied.
         """
         if not isinstance(rsi_period, int) or rsi_period <= 0:
             raise ValueError("RSI period must be a positive integer.")
@@ -38,15 +41,23 @@ class RsiMeanReversionStrategy(Strategy):
             )
         if not (0 < oversold_threshold < 100 and 0 < overbought_threshold < 100):
             raise ValueError("RSI thresholds must be between 0 and 100.")
+        if trend_filter_period is not None and (
+            not isinstance(trend_filter_period, int) or trend_filter_period <= 0
+        ):
+            raise ValueError(
+                "Trend filter period must be a positive integer if provided."
+            )
 
         super().__init__(
             rsi_period=rsi_period,
             oversold_threshold=oversold_threshold,
             overbought_threshold=overbought_threshold,
+            trend_filter_period=trend_filter_period,
         )
         self.rsi_period = rsi_period
         self.oversold = oversold_threshold
         self.overbought = overbought_threshold
+        self.trend_filter_period = trend_filter_period
 
     def _calculate_rsi(self, series: pd.Series, period: int) -> pd.Series:
         """Calculates the Relative Strength Index (RSI)."""
@@ -59,14 +70,16 @@ class RsiMeanReversionStrategy(Strategy):
         avg_gain = gain.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
         avg_loss = loss.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
 
-        rs = avg_gain / avg_loss
+        # Handle potential division by zero if avg_loss is 0
+        rs = avg_gain / avg_loss.replace(0, np.nan)
         rsi = 100 - (100 / (1 + rs))
+        rsi.fillna(50, inplace=True)
 
         return rsi
 
     def generate_signals(self, data: pd.DataFrame) -> pd.Series:
         """
-        Generates trading signals based on RSI levels.
+        Generates trading signals based on RSI levels, optionally filtered by trend.
 
         Args:
             data: DataFrame containing at least the 'Close' price column.
@@ -77,20 +90,47 @@ class RsiMeanReversionStrategy(Strategy):
         if "Close" not in data.columns:
             raise ValueError("Input DataFrame must contain a 'Close' column.")
 
-        close_prices = data["Close"]
+        df = data.copy()
+        close_prices = df["Close"]
 
         # Calculate RSI
-        rsi = self._calculate_rsi(close_prices, self.rsi_period)
+        df["rsi"] = self._calculate_rsi(close_prices, self.rsi_period)
 
-        # Determine signal based on RSI thresholds
-        position = pd.Series(index=data.index, data=0, dtype=int)
-        position[rsi < self.oversold] = 1  # Go long when oversold
-        position[rsi > self.overbought] = -1  # Go short when overbought
+        # Determine initial signal based on RSI thresholds
+        df["signal"] = 0
+        df.loc[df["rsi"] < self.oversold, "signal"] = 1  # Go long when oversold
+        df.loc[df["rsi"] > self.overbought, "signal"] = -1  # Go short when overbought
 
-        # Signals are only valid after RSI calculation period
-        position[: self.rsi_period] = 0
+        # --- Apply Trend Filter ---
+        if self.trend_filter_period is not None and self.trend_filter_period > 0:
+            # Calculate trend SMA
+            sma_trend_col = f"sma_{self.trend_filter_period}"
+            df[sma_trend_col] = close_prices.rolling(
+                window=self.trend_filter_period, min_periods=self.trend_filter_period
+            ).mean()
 
-        # Fill NaNs that might occur if avg_loss is zero initially
-        position.fillna(0, inplace=True)
+            # Filter signals based on trend
+            # Block longs in downtrend
+            long_block_condition = (df["signal"] == 1) & (
+                close_prices < df[sma_trend_col]
+            )
+            df.loc[long_block_condition, "signal"] = 0
 
-        return position.astype(int)
+            # Block shorts in uptrend
+            short_block_condition = (df["signal"] == -1) & (
+                close_prices > df[sma_trend_col]
+            )
+            df.loc[short_block_condition, "signal"] = 0
+        # --- End Trend Filter ---
+
+        # Signals are only valid after RSI and trend filter (if used) have enough data
+        warmup_period = self.rsi_period
+        if self.trend_filter_period is not None and self.trend_filter_period > 0:
+            warmup_period = max(warmup_period, self.trend_filter_period)
+
+        df["signal"][:warmup_period] = 0
+
+        # Fill NaNs that might occur if avg_loss is zero initially or from SMA
+        df["signal"].fillna(0, inplace=True)
+
+        return df["signal"].astype(int)

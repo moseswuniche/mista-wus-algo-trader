@@ -10,13 +10,17 @@ Features include:
 - Backtesting engine with intra-bar SL/TP/TSL simulation (`backtest.py`)
 - Calculation of standard performance metrics (Profit, Win Rate, Sharpe Ratio, Max Drawdown, Profit Factor)
 - **Parallel** Grid search parameter optimization (`optimize.py`)
-- **Parallel** Batch optimization for multiple strategies/symbols (`run_batch_optimization.py`)
+  - Parameter grids defined in `config/optimize_params.yaml`, including SL/TP/TSL and optional trend filter.
+  - Best parameters (including SL/TP/TSL, trend filter) saved to `config/best_params.yaml`.
+- **Parallel** Batch optimization for multiple strategies/symbols (`run_batch_optimization.py`) - *[Needs review/update?]*
+- **Sequential** Batch optimization via `make trigger-threaded-optimizer`
 - Optimization based on selectable performance metrics
 - Simulated forward testing (`forward_test.py`) with HTML reports
 - Saving of detailed optimization results to CSV
 - Analysis of trade logs and optimization detail results (`analyze_trades.py`)
   - Generation of performance summary plots and HTML reports
 - Historical data fetching (`fetch_data.py`)
+- **Regime Filtering:** Optional SMA-based trend filter available in MA Crossover, RSI Reversion, BB Reversion, and Long Short strategies (configured via `trend_filter_period`).
 - Type hints and MyPy checking
 - Code formatting using Black
 - Configuration via YAML for optimization and runtime parameters
@@ -101,30 +105,30 @@ Use `make help` to see available commands and default variable values.
     # Fetch hourly ETH data from 2020:
     make fetch-data FETCH_ARGS="--symbols ETHUSDT --interval 1h --start 2020-01-01"
     ```
-*   **Run Strategy Optimization:** Optimizes parameters (including optional SL/TP/TSL) using grid search based on `config/optimize_params.yaml`. Saves the best parameters to `config/best_params.yaml`.
+*   **Run Strategy Optimization:** Optimizes parameters (including optional SL/TP/TSL and trend filter) using grid search based on `config/optimize_params.yaml`. Saves the best parameters to `config/best_params.yaml`.
     *   **Single Run (Parallel Backtests):** Uses multiprocessing *within* the `optimize.py` script to speed up testing parameter combinations for *one* strategy/symbol pair.
         ```bash
         # Optimize MACross for BTCUSDT daily data, maximizing Sharpe Ratio, saving details, using 6 cores
         make optimize OPTIMIZE_ARGS="--strategy MACross --symbol BTCUSDT --file data/1d/BTCUSDT_1d.csv --metric sharpe_ratio --save-details --balance 10000 --commission 7.5 -p 6"
         ```
         *   Use the `-p N` argument within `OPTIMIZE_ARGS` to specify the number of cores for backtesting *within* this single optimization run.
-    *   **Batch Run (Parallel Optimizations - `optimize-batch`):** Runs *multiple independent optimization tasks* (for different strategies and/or symbols) *concurrently* using multiprocessing managed by `run_batch_optimization.py`. This is generally faster for optimizing many pairs if you have sufficient CPU cores.
+    *   **Batch Run (Parallel Optimizations - `optimize-batch`):** *[Needs review/update?]* Runs *multiple independent optimization tasks* (for different strategies and/or symbols) *concurrently* using multiprocessing managed by `run_batch_optimization.py`. This is generally faster for optimizing many pairs if you have sufficient CPU cores.
         ```bash
         # Batch optimize RSIReversion and BBReversion for XRP/ETH hourly, minimizing Max Drawdown
         make optimize-batch STRATEGIES="RSIReversion BBReversion" SYMBOLS="XRPUSDT ETHUSDT" INTERVAL=1h METRIC=max_drawdown START_DATE=2020-01-01 END_DATE=2022-12-31 BALANCE=25000 COMMISSION=5 SAVE_DETAILS=true
         ```
-        *   The number of parallel optimization *processes* is controlled by the `--processes` argument passed to `src/trading_bots/run_batch_optimization.py` (defaults set in that script, check it for details or override with `-p N` in the script call if needed).
-    *   **Batch Run (Sequential Trigger - `trigger-threaded-optimizer`):** Runs optimization for multiple strategy/symbol combinations *sequentially*. For each combination, it calls `make optimize`, which in turn runs `optimize.py` potentially using multiple cores for its internal backtests (controlled by `TSO_PROCESSES` variable). This approach is simpler but slower than `optimize-batch` as the strategy/symbol pairs are not run concurrently.
+        *   The number of parallel optimization *processes* is controlled by the `--processes` argument passed to `src/trading_bots/run_batch_optimization.py`.
+    *   **Batch Run (Sequential Trigger - `trigger-threaded-optimizer`):** Runs optimization for multiple strategy/symbol combinations *sequentially*. For each combination, it calls `make optimize`, which in turn runs `optimize.py` potentially using multiple cores for its internal backtests (controlled by `TSO_PROCESSES` variable). This approach is simpler but slower than `optimize-batch`.
         ```bash
         # Sequentially optimize RSIReversion and BBReversion for XRP/ETH hourly, using TSO_ variables
         make trigger-threaded-optimizer TSO_STRATEGIES="RSIReversion BBReversion" TSO_SYMBOLS="XRPUSDT ETHUSDT" TSO_INTERVAL=1h TSO_METRIC=sharpe_ratio TSO_BALANCE=5000 TSO_SAVE_DETAILS=true TSO_PROCESSES=4
         ```
         *   The `TSO_PROCESSES` variable controls the number of cores used by the underlying `optimize.py` script for *each* sequential optimization task.
-    *   Configure parameter search ranges, including `stop_loss_pct`, `take_profit_pct`, `trailing_stop_loss_pct` (use `None` to test without them), in `config/optimize_params.yaml`.
+    *   Configure parameter search ranges, including `stop_loss_pct`, `take_profit_pct`, `trailing_stop_loss_pct`, and `trend_filter_period` (use `None` to test without filter), in `config/optimize_params.yaml`.
     *   Specify the optimization target using `METRIC=` or `TSO_METRIC=` (Makefile variables) or `--metric` (`OPTIMIZE_ARGS`). Choices: `cumulative_profit`, `final_balance`, `sharpe_ratio`, `profit_factor`, `max_drawdown`, `win_rate`.
     *   Use `SAVE_DETAILS=true` or `TSO_SAVE_DETAILS=true` (Makefile variables) or `--save-details` (`OPTIMIZE_ARGS`) to save all tested combinations to a CSV file in `results/optimization/`.
     *   Set initial balance using `BALANCE=` or `TSO_BALANCE=` or `--balance`.
-    *   Best parameters (including SL/TP/TSL) are saved to `--output-params` (default: `config/best_params.yaml`).
+    *   Best parameters (including SL/TP/TSL and trend filter) are saved to `--output-config` (default: `config/best_params.yaml`).
 *   **Run Simulated Forward Test:** Runs the backtester using the best parameters found during optimization (from `config/best_params.yaml`) on a *different* historical data period. Generates reports and saves trade logs.
     *   **Single Run:**
         ```bash

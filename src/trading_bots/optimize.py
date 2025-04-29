@@ -560,7 +560,7 @@ def main():
     )
     parser.add_argument(
         "--metric",
-        default="cumulative_profit",
+        default="sharpe_ratio",
         help="Metric to optimize (from backtest results).",
     )
     parser.add_argument(
@@ -690,15 +690,36 @@ def main():
                     # Flatten the results for CSV
                     flat_results = []
                     for res in all_results_list:
-                        row = res["params"].copy()  # Start with parameters
-                        # Add other results, prefixing to avoid name collisions if needed
+                        # Reconstruct row from prefixed keys
+                        row = {}
+                        params_part = {}
+                        results_part = {}
+
                         for k, v in res.items():
-                            if (
-                                k != "params"
-                                and k != "performance_summary"
-                                and k != "equity_curve"
-                            ):  # Exclude complex objects
-                                row[f"result_{k}"] = v
+                            if k.startswith("params."):
+                                original_param_key = k[len("params.") :]
+                                params_part[original_param_key] = v
+                            elif k.startswith("result_"):
+                                # Exclude complex objects by checking the original key name
+                                original_result_key = k[len("result_") :]
+                                if (
+                                    original_result_key != "performance_summary"
+                                    and original_result_key != "equity_curve"
+                                ):
+                                    results_part[k] = (
+                                        v  # Keep prefix for results columns
+                                    )
+                            # else: might be other unexpected keys, ignore for now
+
+                        if not params_part:  # Check if we actually extracted params
+                            logger.warning(
+                                f"Could not extract parameters from result entry: {res}"
+                            )
+                            continue
+
+                        # Combine params (no prefix) and results (with prefix)
+                        row.update(params_part)
+                        row.update(results_part)
                         flat_results.append(row)
 
                     results_df = pd.DataFrame(flat_results)

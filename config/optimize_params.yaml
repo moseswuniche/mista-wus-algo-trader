@@ -8,6 +8,7 @@ BTCUSDT:
     stop_loss_pct: [None, 0.02, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.06, 0.10]
     trailing_stop_loss_pct: [None, 0.01, 0.02]
+    trend_filter_period: [None, 100, 150, 200]
   RsiMeanReversionStrategy:
     rsi_period: [7, 10, 14, 21]
     oversold_threshold: [20, 25, 30]
@@ -15,34 +16,34 @@ BTCUSDT:
     stop_loss_pct: [None, 0.02, 0.04]
     take_profit_pct: [None, 0.03, 0.05, 0.08]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
-    # exit_threshold: [45, 50, 55] # Example: Add exit condition if strategy uses it
+    trend_filter_period: [None, 100, 150, 200]
   BollingerBandReversionStrategy:
     bb_period: [15, 20, 25]  # Centered around 20
     bb_std_dev: [1.8, 2.0, 2.2] # Centered around 2.0
     stop_loss_pct: [None, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.07, 0.10]
     trailing_stop_loss_pct: [None, 0.02, 0.03]
-    # entry_threshold: [0.05, 0.1] # Example: Add if strategy needs specific entry distance
-    # exit_threshold: [0.5, 0.6] # Example: Add if strategy needs specific exit distance
+    trend_filter_period: [None, 100, 150, 200]
   LongShortStrategy:
-    fast_ema_period: [9, 12, 15] # Common short EMAs
-    slow_ema_period: [21, 26, 30] # Common longer EMAs
-    rsi_period: [10, 14, 21] # Standard RSI periods
-    rsi_threshold_low: [40, 45, 50] # RSI levels for trend/momentum filter
-    rsi_threshold_high: [50, 55, 60]
-    volume_z_thresh_low: [-3.0, -2.5, -2.0] # Z-score thresholds for volume
-    volume_z_thresh_high: [2.0, 2.5, 3.0]
+    # Parameters translated by optimize.py into return_thresh and volume_thresh tuples
+    rsi_threshold_low: [40, 45, 50] # Represents return_thresh[0]
+    rsi_threshold_high: [50, 55, 60] # Represents return_thresh[1]
+    volume_z_thresh_low: [-3.0, -2.5, -2.0] # Represents volume_thresh[0]
+    volume_z_thresh_high: [2.0, 2.5, 3.0] # Represents volume_thresh[1]
+    # Risk/Filter parameters
     stop_loss_pct: [None, 0.02, 0.035]
     take_profit_pct: [None, 0.05, 0.075, 0.10]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
+    trend_filter_period: [None, 100, 150, 200]
 
 XRPUSDT:
   MovingAverageCrossoverStrategy:
-    fast_period: [9, 15, 20] # Example different range
+    fast_period: [9, 15, 20]
     slow_period: [25, 50, 75]
     stop_loss_pct: [None, 0.02, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.06, 0.10]
     trailing_stop_loss_pct: [None, 0.01, 0.02]
+    trend_filter_period: [None, 100, 150, 200]
   RsiMeanReversionStrategy:
     rsi_period: [7, 10, 14, 21]
     oversold_threshold: [20, 25, 30]
@@ -50,16 +51,15 @@ XRPUSDT:
     stop_loss_pct: [None, 0.02, 0.04]
     take_profit_pct: [None, 0.03, 0.05, 0.08]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
+    trend_filter_period: [None, 100, 150, 200]
   BollingerBandReversionStrategy:
     bb_period: [15, 20, 25]
     bb_std_dev: [1.8, 2.0, 2.2]
     stop_loss_pct: [None, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.07, 0.10]
     trailing_stop_loss_pct: [None, 0.02, 0.03]
+    trend_filter_period: [None, 100, 150, 200]
   LongShortStrategy:
-    fast_ema_period: [9, 12, 15]
-    slow_ema_period: [21, 26, 30]
-    rsi_period: [10, 14, 21]
     rsi_threshold_low: [40, 45, 50]
     rsi_threshold_high: [50, 55, 60]
     volume_z_thresh_low: [-3.0, -2.5, -2.0]
@@ -67,6 +67,7 @@ XRPUSDT:
     stop_loss_pct: [None, 0.02, 0.035]
     take_profit_pct: [None, 0.05, 0.075, 0.10]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
+    trend_filter_period: [None, 100, 150, 200]
 
 ALGOUSDT:
   MovingAverageCrossoverStrategy:
@@ -75,6 +76,7 @@ ALGOUSDT:
     stop_loss_pct: [None, 0.02, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.06, 0.10]
     trailing_stop_loss_pct: [None, 0.01, 0.02]
+    trend_filter_period: [None, 100, 150, 200]
   RsiMeanReversionStrategy:
     rsi_period: [7, 10, 14, 21]
     oversold_threshold: [20, 25, 30]
@@ -82,16 +84,15 @@ ALGOUSDT:
     stop_loss_pct: [None, 0.02, 0.04]
     take_profit_pct: [None, 0.03, 0.05, 0.08]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
+    trend_filter_period: [None, 100, 150, 200]
   BollingerBandReversionStrategy:
     bb_period: [15, 20, 25]
     bb_std_dev: [1.8, 2.0, 2.2]
     stop_loss_pct: [None, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.07, 0.10]
     trailing_stop_loss_pct: [None, 0.02, 0.03]
+    trend_filter_period: [None, 100, 150, 200]
   LongShortStrategy:
-    fast_ema_period: [9, 12, 15]
-    slow_ema_period: [21, 26, 30]
-    rsi_period: [10, 14, 21]
     rsi_threshold_low: [40, 45, 50]
     rsi_threshold_high: [50, 55, 60]
     volume_z_thresh_low: [-3.0, -2.5, -2.0]
@@ -99,6 +100,7 @@ ALGOUSDT:
     stop_loss_pct: [None, 0.02, 0.035]
     take_profit_pct: [None, 0.05, 0.075, 0.10]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
+    trend_filter_period: [None, 100, 150, 200]
 
 ETHUSDT:
   MovingAverageCrossoverStrategy:
@@ -107,6 +109,7 @@ ETHUSDT:
     stop_loss_pct: [None, 0.02, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.06, 0.10]
     trailing_stop_loss_pct: [None, 0.01, 0.02]
+    trend_filter_period: [None, 100, 150, 200]
   RsiMeanReversionStrategy:
     rsi_period: [7, 10, 14, 21]
     oversold_threshold: [20, 25, 30]
@@ -114,16 +117,15 @@ ETHUSDT:
     stop_loss_pct: [None, 0.02, 0.04]
     take_profit_pct: [None, 0.03, 0.05, 0.08]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
+    trend_filter_period: [None, 100, 150, 200]
   BollingerBandReversionStrategy:
     bb_period: [15, 20, 25]
     bb_std_dev: [1.8, 2.0, 2.2]
     stop_loss_pct: [None, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.07, 0.10]
     trailing_stop_loss_pct: [None, 0.02, 0.03]
+    trend_filter_period: [None, 100, 150, 200]
   LongShortStrategy:
-    fast_ema_period: [9, 12, 15]
-    slow_ema_period: [21, 26, 30]
-    rsi_period: [10, 14, 21]
     rsi_threshold_low: [40, 45, 50]
     rsi_threshold_high: [50, 55, 60]
     volume_z_thresh_low: [-3.0, -2.5, -2.0]
@@ -131,6 +133,7 @@ ETHUSDT:
     stop_loss_pct: [None, 0.02, 0.035]
     take_profit_pct: [None, 0.05, 0.075, 0.10]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
+    trend_filter_period: [None, 100, 150, 200]
 
 HBARUSDT:
   MovingAverageCrossoverStrategy:
@@ -139,6 +142,7 @@ HBARUSDT:
     stop_loss_pct: [None, 0.02, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.06, 0.10]
     trailing_stop_loss_pct: [None, 0.01, 0.02]
+    trend_filter_period: [None, 100, 150, 200]
   RsiMeanReversionStrategy:
     rsi_period: [7, 10, 14, 21]
     oversold_threshold: [20, 25, 30]
@@ -146,16 +150,15 @@ HBARUSDT:
     stop_loss_pct: [None, 0.02, 0.04]
     take_profit_pct: [None, 0.03, 0.05, 0.08]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
+    trend_filter_period: [None, 100, 150, 200]
   BollingerBandReversionStrategy:
     bb_period: [15, 20, 25]
     bb_std_dev: [1.8, 2.0, 2.2]
     stop_loss_pct: [None, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.07, 0.10]
     trailing_stop_loss_pct: [None, 0.02, 0.03]
+    trend_filter_period: [None, 100, 150, 200]
   LongShortStrategy:
-    fast_ema_period: [9, 12, 15]
-    slow_ema_period: [21, 26, 30]
-    rsi_period: [10, 14, 21]
     rsi_threshold_low: [40, 45, 50]
     rsi_threshold_high: [50, 55, 60]
     volume_z_thresh_low: [-3.0, -2.5, -2.0]
@@ -163,6 +166,7 @@ HBARUSDT:
     stop_loss_pct: [None, 0.02, 0.035]
     take_profit_pct: [None, 0.05, 0.075, 0.10]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
+    trend_filter_period: [None, 100, 150, 200]
 
 ADAUSDT:
   MovingAverageCrossoverStrategy:
@@ -171,6 +175,7 @@ ADAUSDT:
     stop_loss_pct: [None, 0.02, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.06, 0.10]
     trailing_stop_loss_pct: [None, 0.01, 0.02]
+    trend_filter_period: [None, 100, 150, 200]
   RsiMeanReversionStrategy:
     rsi_period: [7, 10, 14, 21]
     oversold_threshold: [20, 25, 30]
@@ -178,16 +183,15 @@ ADAUSDT:
     stop_loss_pct: [None, 0.02, 0.04]
     take_profit_pct: [None, 0.03, 0.05, 0.08]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
+    trend_filter_period: [None, 100, 150, 200]
   BollingerBandReversionStrategy:
     bb_period: [15, 20, 25]
     bb_std_dev: [1.8, 2.0, 2.2]
     stop_loss_pct: [None, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.07, 0.10]
     trailing_stop_loss_pct: [None, 0.02, 0.03]
+    trend_filter_period: [None, 100, 150, 200]
   LongShortStrategy:
-    fast_ema_period: [9, 12, 15]
-    slow_ema_period: [21, 26, 30]
-    rsi_period: [10, 14, 21]
     rsi_threshold_low: [40, 45, 50]
     rsi_threshold_high: [50, 55, 60]
     volume_z_thresh_low: [-3.0, -2.5, -2.0]
@@ -195,6 +199,7 @@ ADAUSDT:
     stop_loss_pct: [None, 0.02, 0.035]
     take_profit_pct: [None, 0.05, 0.075, 0.10]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
+    trend_filter_period: [None, 100, 150, 200]
 
 SOLUSDT:
   MovingAverageCrossoverStrategy:
@@ -203,6 +208,7 @@ SOLUSDT:
     stop_loss_pct: [None, 0.02, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.06, 0.10]
     trailing_stop_loss_pct: [None, 0.01, 0.02]
+    trend_filter_period: [None, 100, 150, 200]
   RsiMeanReversionStrategy:
     rsi_period: [7, 10, 14, 21]
     oversold_threshold: [20, 25, 30]
@@ -210,16 +216,15 @@ SOLUSDT:
     stop_loss_pct: [None, 0.02, 0.04]
     take_profit_pct: [None, 0.03, 0.05, 0.08]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
+    trend_filter_period: [None, 100, 150, 200]
   BollingerBandReversionStrategy:
     bb_period: [15, 20, 25]
     bb_std_dev: [1.8, 2.0, 2.2]
     stop_loss_pct: [None, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.07, 0.10]
     trailing_stop_loss_pct: [None, 0.02, 0.03]
+    trend_filter_period: [None, 100, 150, 200]
   LongShortStrategy:
-    fast_ema_period: [9, 12, 15]
-    slow_ema_period: [21, 26, 30]
-    rsi_period: [10, 14, 21]
     rsi_threshold_low: [40, 45, 50]
     rsi_threshold_high: [50, 55, 60]
     volume_z_thresh_low: [-3.0, -2.5, -2.0]
@@ -227,6 +232,7 @@ SOLUSDT:
     stop_loss_pct: [None, 0.02, 0.035]
     take_profit_pct: [None, 0.05, 0.075, 0.10]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
+    trend_filter_period: [None, 100, 150, 200]
 
 LTCUSDT:
   MovingAverageCrossoverStrategy:
@@ -235,6 +241,7 @@ LTCUSDT:
     stop_loss_pct: [None, 0.02, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.06, 0.10]
     trailing_stop_loss_pct: [None, 0.01, 0.02]
+    trend_filter_period: [None, 100, 150, 200]
   RsiMeanReversionStrategy:
     rsi_period: [7, 10, 14, 21]
     oversold_threshold: [20, 25, 30]
@@ -242,16 +249,15 @@ LTCUSDT:
     stop_loss_pct: [None, 0.02, 0.04]
     take_profit_pct: [None, 0.03, 0.05, 0.08]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
+    trend_filter_period: [None, 100, 150, 200]
   BollingerBandReversionStrategy:
     bb_period: [15, 20, 25]
     bb_std_dev: [1.8, 2.0, 2.2]
     stop_loss_pct: [None, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.07, 0.10]
     trailing_stop_loss_pct: [None, 0.02, 0.03]
+    trend_filter_period: [None, 100, 150, 200]
   LongShortStrategy:
-    fast_ema_period: [9, 12, 15]
-    slow_ema_period: [21, 26, 30]
-    rsi_period: [10, 14, 21]
     rsi_threshold_low: [40, 45, 50]
     rsi_threshold_high: [50, 55, 60]
     volume_z_thresh_low: [-3.0, -2.5, -2.0]
@@ -259,6 +265,7 @@ LTCUSDT:
     stop_loss_pct: [None, 0.02, 0.035]
     take_profit_pct: [None, 0.05, 0.075, 0.10]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
+    trend_filter_period: [None, 100, 150, 200]
 
 SUIUSDT:
   MovingAverageCrossoverStrategy:
@@ -267,6 +274,7 @@ SUIUSDT:
     stop_loss_pct: [None, 0.02, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.06, 0.10]
     trailing_stop_loss_pct: [None, 0.01, 0.02]
+    trend_filter_period: [None, 100, 150, 200]
   RsiMeanReversionStrategy:
     rsi_period: [7, 10, 14, 21]
     oversold_threshold: [20, 25, 30]
@@ -274,16 +282,15 @@ SUIUSDT:
     stop_loss_pct: [None, 0.02, 0.04]
     take_profit_pct: [None, 0.03, 0.05, 0.08]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
+    trend_filter_period: [None, 100, 150, 200]
   BollingerBandReversionStrategy:
     bb_period: [15, 20, 25]
     bb_std_dev: [1.8, 2.0, 2.2]
     stop_loss_pct: [None, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.07, 0.10]
     trailing_stop_loss_pct: [None, 0.02, 0.03]
+    trend_filter_period: [None, 100, 150, 200]
   LongShortStrategy:
-    fast_ema_period: [9, 12, 15]
-    slow_ema_period: [21, 26, 30]
-    rsi_period: [10, 14, 21]
     rsi_threshold_low: [40, 45, 50]
     rsi_threshold_high: [50, 55, 60]
     volume_z_thresh_low: [-3.0, -2.5, -2.0]
@@ -291,9 +298,9 @@ SUIUSDT:
     stop_loss_pct: [None, 0.02, 0.035]
     take_profit_pct: [None, 0.05, 0.075, 0.10]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
+    trend_filter_period: [None, 100, 150, 200]
 
 # Add configurations for other symbols as needed
-# Note: Removed return_thresh_low/high from LongShortStrategy as they are not standard params
-#       Replaced volume_thresh_low/high with volume_z_thresh_low/high based on strategy implementation using z-scores.
-#       Added typical EMA and RSI params often used in combined strategies.
-#       Added commented-out examples for entry/exit thresholds in RSI and BB strategies if needed later. 
+# Note: Renamed keys in LongShortStrategy section to reflect actual expected params
+#       (rsi_threshold_low/high, volume_z_thresh_low/high)
+#       Removed unnecessary placeholders for EMA/RSI periods for LongShortStrategy. 
