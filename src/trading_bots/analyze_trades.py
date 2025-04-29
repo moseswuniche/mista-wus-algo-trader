@@ -20,85 +20,100 @@ logger = logging.getLogger(__name__)
 
 
 def parse_trade_filename(filepath: Path) -> Optional[Dict[str, str]]:
-    """Parses strategy, symbol, and params_str from a trade filename.
-
-    Expected format: SYMBOL_STRATEGY_PARAMSTRING_trades.csv
-    Example: BTCUSDT_MACross_ma_short_5_ma_long_20_trades.csv
     """
-    name = (
-        filepath.stem
-    )  # Get filename without extension (e.g., BTCUSDT_MACross_ma_short_5_ma_long_20_trades)
-    # Remove the trailing '_trades'
-    if name.endswith("_trades"):
-        name = name[: -len("_trades")]
-    else:
-        logger.warning(
-            f"Filename {filepath.name} does not end with '_trades'. Skipping."
-        )
+    Parses strategy, symbol, and parameters (if present) from a trade log filename.
+    Handles both optimization format (SYMBOL_STRATEGY_p1_v1...) and standard format (STRATEGY_SYMBOL_...).
+    """
+    name = filepath.stem  # Filename without extension
+    if not name.endswith("_trades"):
+        logger.debug(f"Skipping non-trade file: {filepath.name}")
         return None
 
-    parts = name.split("_")
-    if len(parts) < 3:
-        logger.warning(
-            f"Cannot parse filename {filepath.name}. Expected at least SYMBOL_STRATEGY_PARAMS format. Found {len(parts)} parts."
-        )
+    # Remove the '_trades' suffix
+    base_name = name[: -len("_trades")]
+    parts = base_name.split("_")
+
+    if len(parts) < 2:
+        logger.warning(f"Filename {filepath.name} too short to parse. Skipping.")
         return None
 
-    # Assume symbol is the first part (might contain numbers, e.g., 1000SHIBUSDT)
+    # Attempt 1: Simple format (STRATEGY_SYMBOL_...)
+    # Check if the second part looks like a symbol (e.g., contains USDT, BTC, ETH or is all caps)
+    potential_symbol = parts[1]
+    is_likely_symbol = ("USDT" in potential_symbol or "BTC" in potential_symbol or "ETH" in potential_symbol or potential_symbol.isupper()) and len(potential_symbol) > 4 # Basic check
+
+    if is_likely_symbol:
+        strategy = parts[0]
+        symbol = potential_symbol
+        # The rest is considered non-parameter info (like dates) for standard logs
+        params_str = "N/A" # Indicate no optimizable params parsed
+        logger.debug(f"Parsed standard file: {symbol=}, {strategy=}, {params_str=}")
+        return {
+            "symbol": symbol,
+            "strategy": strategy,
+            "params_str": params_str,
+            "filepath": str(filepath),
+        }
+
+    # Attempt 2: Optimization format (SYMBOL_STRATEGY_p1_v1...)
     symbol = parts[0]
-
-    # Find the strategy name - assumes it's one of the known keys or similar
-    # This is heuristic - might need adjustment if strategy names have underscores
-    # Let's find the first part that looks like a parameter key (contains a number or common key names)
     param_start_index = -1
     potential_strategy_parts = []
+
+    # Heuristics to find where parameters start
     known_param_hints = [
-        "period",
-        "std",
-        "thresh",
         "window",
-        "ma",
+        "period",
+        "limit",
+        "sma",
+        "ema",
+        "stddev",
         "rsi",
-        "bb",
+        "fast",
+        "slow",
+        "signal",
+        "threshold",
+        "stoploss",
+        "takeprofit",
         "sl",
         "tp",
-        "tsl",
-        "loss",
-        "profit",
-        "limit",
-        "stop",
     ]
 
-    # Iterate starting from the second part
+    # Start checking for strategy parts from the second element
     for i in range(1, len(parts)):
         part = parts[i]
-        # Check if part looks like a param key=value start OR is purely numeric
-        # Need double backslash for regex escape within f-string - Correction: No f-string here, r'' handles it.
+        # Check if the *current* part looks like a parameter key
         is_param_key = any(
             hint in part.lower() for hint in known_param_hints
-        ) or re.match(
-            r"p\\d+", part
-        )  # Check for common param names or pX from skopt (Use r'' raw string for regex)
-        is_numeric_value = (
-            parts[i + 1].replace(".", "", 1).isdigit()
-            if (i + 1 < len(parts))
-            else False
-        )
+        ) or re.match(r"p\d+", part) # e.g., p1, p2
 
-        if is_param_key and is_numeric_value:
-            param_start_index = i
+        # Check if the *next* part looks like a numeric value for this key
+        is_numeric_value_next = False
+        if i + 1 < len(parts):
+            next_part = parts[i+1]
+            # Allows integers, floats, and negative floats
+            is_numeric_value_next = next_part.replace(".", "", 1).isdigit() or \
+                                    (next_part.startswith('-') and next_part[1:].replace(".", "", 1).isdigit())
+
+
+        if is_param_key and is_numeric_value_next:
+            param_start_index = i  # Params start at this index
             break
         else:
+            # If not a param key or no numeric value follows, assume it's part of the strategy name
             potential_strategy_parts.append(part)
 
     if not potential_strategy_parts or param_start_index == -1:
         logger.warning(
-            f"Could not reliably distinguish strategy from parameters in {filepath.name}. Skipping."
+            f"Could not reliably distinguish strategy from parameters in optimization filename {filepath.name}. Skipping."
+            f" -> Parsed parts: {parts}, Potential Strategy: {potential_strategy_parts}" # Added detail
         )
         return None
 
     strategy = "_".join(potential_strategy_parts)
     params_str = "_".join(parts[param_start_index:])
+    logger.debug(f"Parsed optimization file: {symbol=}, {strategy=}, {params_str=}")
+
 
     return {
         "symbol": symbol,
@@ -221,6 +236,16 @@ def load_and_process_data(
             filepath = Path(metadata["filepath"])
             try:
                 df = pd.read_csv(filepath)
+
+                # Handle potential column name difference: 'Profit/Loss' vs 'PnL'
+                if "Profit/Loss" in df.columns and "PnL" not in df.columns:
+                    logger.debug(f"Renaming column 'Profit/Loss' to 'PnL' for file {filepath.name}")
+                    df.rename(columns={"Profit/Loss": "PnL"}, inplace=True)
+                # Handle potential duplicate/unnecessary columns like 'Entry Time.1'
+                if "Entry Time.1" in df.columns:
+                     logger.debug(f"Dropping column 'Entry Time.1' from file {filepath.name}")
+                     df.drop(columns=["Entry Time.1"], inplace=True)
+
                 df["symbol"] = metadata["symbol"]
                 df["strategy"] = metadata["strategy"]
                 df["params_str"] = metadata["params_str"]
@@ -250,14 +275,44 @@ def load_and_process_data(
 
         # Convert time columns (only for trade logs)
         try:
-            combined_df["Entry Time"] = pd.to_datetime(combined_df["Entry Time"])
-            combined_df["Exit Time"] = pd.to_datetime(combined_df["Exit Time"])
-            combined_df["Duration"] = (
-                combined_df["Exit Time"] - combined_df["Entry Time"]
+            time_format = "%Y-%m-%d %H:%M:%S" # Explicit format
+            logger.debug(f"Attempting to parse 'Entry Time' and 'Exit Time' with format: {time_format}")
+            
+            # Parse with explicit format and coerce errors
+            combined_df["Entry Time"] = pd.to_datetime(
+                combined_df["Entry Time"], format=time_format, errors='coerce'
             )
+            combined_df["Exit Time"] = pd.to_datetime(
+                combined_df["Exit Time"], format=time_format, errors='coerce'
+            )
+
+            # Check for parsing errors (NaT values)
+            entry_nat_count = combined_df["Entry Time"].isna().sum()
+            exit_nat_count = combined_df["Exit Time"].isna().sum()
+            if entry_nat_count > 0 or exit_nat_count > 0:
+                logger.warning(
+                    f"Date parsing resulted in NaT values. Entry Time NaNs: {entry_nat_count}, Exit Time NaNs: {exit_nat_count}. Check source CSVs for invalid date formats."
+                )
+
+            # Calculate Duration only if both times are valid
+            valid_times = combined_df["Entry Time"].notna() & combined_df["Exit Time"].notna()
+            # Initialize with correct dtype to avoid FutureWarning
+            combined_df["Duration"] = pd.Series(dtype='timedelta64[ns]') 
+            # Calculate only for rows where both times are valid
+            combined_df.loc[valid_times, "Duration"] = (
+                combined_df.loc[valid_times, "Exit Time"] - combined_df.loc[valid_times, "Entry Time"]
+            )
+            
+            # Debug log for date range
+            min_date = combined_df["Entry Time"].min()
+            max_date = combined_df["Exit Time"].max()
+            logger.debug(f"Parsed date range: {min_date} to {max_date}")
+
         except Exception as e:
-            logger.error(f"Error converting time columns to datetime: {e}")
-            combined_df["Duration"] = pd.NaT
+            logger.error(f"Error converting time columns to datetime: {e}", exc_info=True)
+            # Ensure Duration column exists even if parsing fails
+            if "Duration" not in combined_df.columns:
+                combined_df["Duration"] = pd.NaT
 
         return combined_df  # Return the combined trades dataframe
 
@@ -313,10 +368,20 @@ def calculate_metrics(trades_df: pd.DataFrame) -> Dict[str, Any]:
     )
 
     # --- Duration ---
-    if "Duration" in trades_df.columns and trades_df["Duration"].notna().any():
-        metrics["avg_duration"] = trades_df["Duration"].mean()
+    # Calculate mean only on valid Timedelta values, handling potential NaT
+    if "Duration" in trades_df.columns:
+        valid_durations = trades_df["Duration"].dropna()
+        if not valid_durations.empty:
+             # Ensure it's actually timedelta before calculating mean
+            if pd.api.types.is_timedelta64_dtype(valid_durations.dtype):
+                metrics["avg_duration"] = valid_durations.mean()
+            else:
+                logger.warning(f"Duration column has unexpected dtype {valid_durations.dtype}. Skipping avg_duration calculation.")
+                metrics["avg_duration"] = pd.NaT
+        else:
+            metrics["avg_duration"] = pd.NaT # No valid durations found
     else:
-        metrics["avg_duration"] = pd.NaT
+        metrics["avg_duration"] = pd.NaT # Duration column doesn't exist
 
     # --- Max Drawdown (based on cumulative PnL sequence) ---
     # Note: Assumes trades_df is ordered chronologically or sequentially as executed

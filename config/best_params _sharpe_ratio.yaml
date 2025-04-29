@@ -1,0 +1,276 @@
+ADAUSDT:
+  BollingerBandReversionStrategy:
+    bb_period: 25
+    bb_std_dev: 2.2
+    stop_loss_pct: 0.05
+    take_profit_pct: 0.04
+    trailing_stop_loss_pct: 0.02
+    trend_filter_period: 200
+  LongShortStrategy:
+    return_thresh_high: 50
+    return_thresh_low: 40
+    stop_loss_pct: None
+    take_profit_pct: 0.075
+    trailing_stop_loss_pct: None
+    trend_filter_period: null
+    volume_thresh_high: 2.0
+    volume_thresh_low: -3.0
+  MovingAverageCrossoverStrategy:
+    fast_period: 21
+    slow_period: 50
+    stop_loss_pct: None
+    take_profit_pct: None
+    trailing_stop_loss_pct: None
+    trend_filter_period: None
+  RsiMeanReversionStrategy:
+    overbought_threshold: 80
+    oversold_threshold: 20
+    rsi_period: 10
+    stop_loss_pct: None
+    take_profit_pct: 0.03
+    trailing_stop_loss_pct: None
+    trend_filter_period: None
+ALGOUSDT:
+  BollingerBandReversionStrategy:
+    bb_period: 20
+    bb_std_dev: 1.8
+    stop_loss_pct: 0.05
+    take_profit_pct: None
+    trailing_stop_loss_pct: None
+    trend_filter_period: 100
+  LongShortStrategy:
+    return_thresh_high: 50
+    return_thresh_low: 40
+    stop_loss_pct: None
+    take_profit_pct: 0.05
+    trailing_stop_loss_pct: None
+    trend_filter_period: null
+    volume_thresh_high: 2.0
+    volume_thresh_low: -2.0
+  MovingAverageCrossoverStrategy:
+    fast_period: 5
+    slow_period: 20
+    stop_loss_pct: None
+    take_profit_pct: 0.06
+    trailing_stop_loss_pct: None
+    trend_filter_period: 150
+  RsiMeanReversionStrategy:
+    overbought_threshold: 75
+    oversold_threshold: 20
+    rsi_period: 7
+    stop_loss_pct: None
+    take_profit_pct: 0.08
+    trailing_stop_loss_pct: None
+    trend_filter_period: None
+BTCUSDT:
+  BollingerBandReversionStrategy:
+    bb_period: 15
+    bb_std_dev: 1.8
+    stop_loss_pct: 0.03
+    take_profit_pct: 0.1
+    trailing_stop_loss_pct: None
+    trend_filter_period: 100
+  LongShortStrategy:
+    return_thresh_high: 0.0001
+    return_thresh_low: -0.0005
+    volume_thresh_high: 3
+    volume_thresh_low: -3
+  MovingAverageCrossoverStrategy:
+    fast_period: 13
+    slow_period: 21
+    stop_loss_pct: 0.03
+    take_profit_pct: None
+    trailing_stop_loss_pct: 0.01
+    trend_filter_period: 150
+  RsiMeanReversionStrategy:
+    overbought_threshold: 70
+    oversold_threshold: 30
+    rsi_period: 7
+    stop_loss_pct: 0.02
+    take_profit_pct: 0.03
+    trailing_stop_loss_pct: 0.025
+    trend_filter_period: None
+ETHUSDT:
+  BollingerBandReversionStrategy:
+    bb_period: 25
+    bb_std_dev: 1.8
+    stop_loss_pct: None
+    take_profit_pct: None
+    trailing_stop_loss_pct: None
+    trend_filter_period: 100
+  LongShortStrategy:
+    return_thresh_high: 0.0005
+    return_thresh_low: -0.0002
+    volume_thresh_high: 3
+    volume_thresh_low: -3
+  MovingAverageCrossoverStrategy:
+    fast_period: 5
+    slow_period: 100
+    stop_loss_pct: 0.05
+    take_profit_pct: None
+    trailing_stop_loss_pct: None
+    trend_filter_period: None
+  RsiMeanReversionStrategy:
+    overbought_threshold: 80
+    oversold_threshold: 30
+    rsi_period: 14
+    stop_loss_pct: 0.04
+    take_profit_pct: 0.03
+    trailing_stop_loss_pct: 0.015
+    trend_filter_period: 150
+HBARUSDT:
+  BollingerBandReversionStrategy:
+    bb_period: 25
+    bb_std_dev: 2.2
+    stop_loss_pct: None
+    take_profit_pct: None
+    trailing_stop_loss_pct: None
+    trend_filter_period: None
+  LongShortStrategy:
+    return_thresh_high: 50
+    return_thresh_low: 40
+    stop_loss_pct: None
+    take_profit_pct: 0.075
+    trailing_stop_loss_pct: None
+    trend_filter_period: null
+    volume_thresh_high: 2.0
+    volume_thresh_low: -3.0
+  MovingAverageCrossoverStrategy:
+    fast_period: 21
+    slow_period: 100
+    stop_loss_pct: None
+    take_profit_pct: 0.04
+    trailing_stop_loss_pct: None
+    trend_filter_period: None
+  RsiMeanReversionStrategy:
+    overbought_threshold: 70
+    oversold_threshold: 25
+    rsi_period: 14
+    stop_loss_pct: 0.04
+    take_profit_pct: 0.08
+    trailing_stop_loss_pct: None
+    trend_filter_period: None
+LTCUSDT:
+  BollingerBandReversionStrategy:
+    bb_period: 15
+    bb_std_dev: 1.8
+    stop_loss_pct: None
+    take_profit_pct: 0.04
+    trailing_stop_loss_pct: None
+    trend_filter_period: 100
+  LongShortStrategy:
+    return_thresh_high: 50
+    return_thresh_low: 40
+    stop_loss_pct: 0.02
+    take_profit_pct: 0.05
+    trailing_stop_loss_pct: 0.025
+    trend_filter_period: null
+    volume_thresh_high: 3.0
+    volume_thresh_low: -2.0
+  MovingAverageCrossoverStrategy:
+    fast_period: 9
+    slow_period: 50
+    stop_loss_pct: 0.03
+    take_profit_pct: 0.1
+    trailing_stop_loss_pct: 0.02
+    trend_filter_period: 100
+  RsiMeanReversionStrategy:
+    overbought_threshold: 70
+    oversold_threshold: 20
+    rsi_period: 7
+    stop_loss_pct: 0.02
+    take_profit_pct: 0.03
+    trailing_stop_loss_pct: 0.025
+    trend_filter_period: 150
+SOLUSDT:
+  BollingerBandReversionStrategy:
+    bb_period: 20
+    bb_std_dev: 2.2
+    stop_loss_pct: 0.05
+    take_profit_pct: 0.04
+    trailing_stop_loss_pct: 0.02
+    trend_filter_period: 150
+  LongShortStrategy:
+    return_thresh_high: 50
+    return_thresh_low: 40
+    stop_loss_pct: 0.035
+    take_profit_pct: None
+    trailing_stop_loss_pct: None
+    trend_filter_period: 150
+    volume_thresh_high: 3.0
+    volume_thresh_low: -3.0
+  MovingAverageCrossoverStrategy:
+    fast_period: 13
+    slow_period: 34
+    stop_loss_pct: None
+    take_profit_pct: 0.04
+    trailing_stop_loss_pct: None
+    trend_filter_period: 150
+  RsiMeanReversionStrategy:
+    overbought_threshold: 80
+    oversold_threshold: 20
+    rsi_period: 7
+    stop_loss_pct: 0.04
+    take_profit_pct: None
+    trailing_stop_loss_pct: None
+    trend_filter_period: 150
+SUIUSDT:
+  BollingerBandReversionStrategy:
+    bb_period: 25
+    bb_std_dev: 2.0
+    stop_loss_pct: 0.03
+    take_profit_pct: None
+    trailing_stop_loss_pct: None
+    trend_filter_period: 150
+  LongShortStrategy:
+    return_thresh_high: 0.0004
+    return_thresh_low: -0.0003
+    volume_thresh_high: 3
+    volume_thresh_low: -3
+  MovingAverageCrossoverStrategy:
+    fast_period: 5
+    slow_period: 100
+    stop_loss_pct: None
+    take_profit_pct: 0.06
+    trailing_stop_loss_pct: None
+    trend_filter_period: None
+  RsiMeanReversionStrategy:
+    overbought_threshold: 75
+    oversold_threshold: 20
+    rsi_period: 14
+    stop_loss_pct: None
+    take_profit_pct: 0.05
+    trailing_stop_loss_pct: None
+    trend_filter_period: None
+XRPUSDT:
+  BollingerBandReversionStrategy:
+    bb_period: 25
+    bb_std_dev: 2.2
+    stop_loss_pct: None
+    take_profit_pct: 0.07
+    trailing_stop_loss_pct: None
+    trend_filter_period: 200
+  LongShortStrategy:
+    return_thresh_high: 50
+    return_thresh_low: 40
+    stop_loss_pct: None
+    take_profit_pct: 0.05
+    trailing_stop_loss_pct: None
+    trend_filter_period: 200
+    volume_thresh_high: 3.0
+    volume_thresh_low: -3.0
+  MovingAverageCrossoverStrategy:
+    fast_period: 15
+    slow_period: 50
+    stop_loss_pct: None
+    take_profit_pct: 0.1
+    trailing_stop_loss_pct: None
+    trend_filter_period: None
+  RsiMeanReversionStrategy:
+    overbought_threshold: 75
+    oversold_threshold: 25
+    rsi_period: 10
+    stop_loss_pct: None
+    take_profit_pct: None
+    trailing_stop_loss_pct: None
+    trend_filter_period: 200

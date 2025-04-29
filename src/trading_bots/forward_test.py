@@ -194,6 +194,11 @@ def run_forward_test(
         float(trailing_stop_loss) if trailing_stop_loss is not None else None
     )
 
+    # Convert string "None" to actual None for core strategy parameters
+    for key, value in core_params.items():
+        if isinstance(value, str) and value.lower() == "none":
+            core_params[key] = None
+
     # core_params now only contains parameters for the strategy's __init__
     logger.info(
         f"Instantiated strategy {strategy_class_name} with core parameters: {core_params}"
@@ -334,7 +339,7 @@ def run_forward_test(
         summary_df = fwd_results.get("performance_summary")
         if isinstance(summary_df, pd.DataFrame) and not summary_df.empty:
             logger.info("\n--- Forward Test Trade Summary ---")
-            logger.info(f"\n{summary_df.to_string()}")
+            # logger.info(f"\n{summary_df.to_string()}") # Suppress detailed trade printing to console
             trades_filename = trades_dir / f"{base_filename}_trades.csv"
             try:
                 summary_df.to_csv(trades_filename)

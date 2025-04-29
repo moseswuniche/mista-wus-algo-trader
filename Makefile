@@ -22,8 +22,8 @@ PYTHON_CMD = python
 STRATEGIES ?= BBReversion # Space-separated strategy list (e.g., "BBReversion RSIReversion")
 SYMBOLS    ?= XRPUSDT BTCUSDT # Space-separated symbol list (e.g., "XRPUSDT BTCUSDT ETHUSDT")
 INTERVAL   ?= 1h
-START_DATE ?= 2018-01-01
-END_DATE   ?= 2021-01-01
+START_DATE ?= 2017-01-01
+END_DATE   ?= 2023-08-17
 COMMISSION ?= 7.5      # Commission in basis points (e.g., 7.5 for 0.075%)
 
 # Forward Test Period
@@ -257,11 +257,17 @@ help:
 # Analyze individual trade logs (_trades.csv) and generate full reports/plots
 analyze-trades:
 	@echo "--- Running Analysis on Trade Logs (results/optimize/trades/) ---"
-	$(POETRY) run python -m src.trading_bots.analyze_trades --plotting
+	$(POETRY) run python -m src.trading_bots.analyze_trades --results-dir results/optimize --plotting
 	@echo "--- Finished Trade Log Analysis ---"
 
 # Analyze optimization detail summaries (_optimize_details_*.csv) 
 analyze-details:
 	@echo "--- Running Analysis on Optimization Details (results/optimize/) ---"
 	$(POETRY) run python -m src.trading_bots.analyze_trades --analyze-details --plotting
-	@echo "--- Finished Optimization Detail Analysis ---" 
+	@echo "--- Finished Optimization Detail Analysis ---"
+
+# Analyze forward test trade logs (_trades.csv)
+analyze-forward-trades:
+	@echo "--- Running Analysis on Forward Test Trade Logs (results/forward_test/trades/) ---"
+	$(POETRY) run python -m src.trading_bots.analyze_trades --results-dir results/forward_test --plotting
+	@echo "--- Finished Forward Test Trade Log Analysis ---" 
