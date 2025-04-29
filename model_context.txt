@@ -1,0 +1,35 @@
+**Project:** Mista Wus Algo Trader
+
+**Description:** A Python-based algorithmic trading bot framework designed for cryptocurrencies on Binance. It supports modular strategies, live trading via WebSockets, backtesting, parameter optimization, and forward testing. The framework includes features like configurable stop-loss, take-profit, trailing-stop-loss, max cumulative loss limits, and runtime configuration reloading for the live trader.
+
+**Core Components:**
+*   `src/trading_bots/trader.py`: Handles live trading logic, WebSocket management, order execution, and runtime configuration.
+*   `src/trading_bots/strategies/`: Directory containing strategy implementations (e.g., `LongShortStrategy`, `MACross`, `RSIReversion`, `BBReversion`), all inheriting from `base_strategy.Strategy`.
+*   `src/trading_bots/backtest.py`: Provides the `run_backtest` function for simulating strategy performance on historical data, including intra-bar SL/TP checks.
+*   `src/trading_bots/optimize.py`: Performs grid search optimization for strategy parameters (defined in `config/optimize_params.yaml`), leveraging multiprocessing for parallel backtests (`run_backtest_for_params`). Saves best parameters to `config/best_params.yaml`.
+*   `src/trading_bots/forward_test.py`: Runs a backtest using optimized parameters on a specified forward period, generating reports and trade logs.
+*   `src/trading_bots/run_batch_optimization.py`: Orchestrates running multiple `optimize.py` tasks in parallel for different strategy/symbol combinations.
+*   `src/trading_bots/analyze_trades.py`: Analyzes trade logs (`_trades.csv`) or optimization detail summaries (`_optimize_details_*.csv`) to generate performance reports and plots.
+*   `src/trading_bots/fetch_data.py`: Downloads historical K-line data from Binance.
+*   `config/`: Contains YAML configuration files (`optimize_params.yaml`, `best_params.yaml`, `runtime_config.yaml`).
+*   `results/`: Default directory for output (optimization details, forward test reports/trades, analysis results). Often gitignored.
+*   `data/`: Default directory for storing downloaded CSV market data. Often gitignored.
+*   `Makefile`: Provides convenient commands for common workflows.
+
+**Key Makefile Targets & Workflow:**
+1.  `make install`: Set up environment using Poetry.
+2.  `make fetch-data`: Download historical data.
+3.  `make optimize` / `make optimize-batch` / `make trigger-threaded-optimizer`: Run parameter optimization.
+    *   `optimize`: Single strategy/symbol, parallel internal backtests.
+    *   `optimize-batch`: Multiple strategy/symbol pairs run concurrently via `run_batch_optimization.py`.
+    *   `trigger-threaded-optimizer`: Multiple strategy/symbol pairs run sequentially, each potentially using parallel internal backtests.
+4.  `make forward-test` / `make forward-test-batch`: Run backtests on a forward period using optimized parameters. Generates reports and *trade logs*.
+5.  `make analyze-trades` / `make analyze-details`: Analyze results from forward tests or optimization details.
+6.  `make trader`: Run the live/simulated trading bot. Use `TRADER_ARGS` for configuration.
+7.  `make lint` / `make format`: Code quality checks.
+
+**Notes:**
+*   Project uses Poetry for dependency management.
+*   Code includes type hints and is checked with MyPy.
+*   Live trading requires API keys (env vars or AWS Secrets Manager).
+*   Be mindful of the distinction between optimization (`optimize.py`) and forward testing (`forward_test.py`) regarding output files (especially trade logs). 
