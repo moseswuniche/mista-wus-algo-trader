@@ -9,7 +9,7 @@ class BollingerBandReversionStrategy(Strategy):
     A mean-reversion strategy using Bollinger Bands.
     Goes long when the price touches or crosses below the lower band.
     Goes short when the price touches or crosses above the upper band.
-    Optionally filters signals based on a long-term trend EMA.
+    Optionally filters signals based on a long-term trend SMA.
     """
 
     def __init__(
@@ -24,7 +24,7 @@ class BollingerBandReversionStrategy(Strategy):
         Args:
             bb_period: The lookback period for the moving average and standard deviation.
             bb_std_dev: The number of standard deviations for the upper and lower bands.
-            trend_filter_period: Optional lookback period for the trend-filtering EMA. If None or 0, no filter is applied.
+            trend_filter_period: Optional lookback period for the trend-filtering SMA. If None or 0, no filter is applied.
         """
         if not isinstance(bb_period, int) or bb_period <= 0:
             raise ValueError("Bollinger Band period must be a positive integer.")
@@ -93,20 +93,23 @@ class BollingerBandReversionStrategy(Strategy):
 
         # --- Apply Trend Filter ---
         if self.trend_filter_period is not None and self.trend_filter_period > 0:
-            # Calculate trend EMA
-            ema_trend_col = f"ema_{self.trend_filter_period}"
-            # Use adjust=False for behavior consistent with simple moving average for finite series start
-            df[ema_trend_col] = close_prices.ewm(
-                span=self.trend_filter_period, adjust=False, min_periods=self.trend_filter_period
+            # Calculate trend SMA
+            sma_trend_col = f"sma_{self.trend_filter_period}"
+            df[sma_trend_col] = close_prices.rolling(
+                window=self.trend_filter_period, min_periods=self.trend_filter_period
             ).mean()
 
             # Filter signals based on trend
             # Block longs in downtrend
-            long_block_condition = (df["signal"] == 1) & (close_prices < df[ema_trend_col])
+            long_block_condition = (df["signal"] == 1) & (
+                close_prices < df[sma_trend_col]
+            )
             df.loc[long_block_condition, "signal"] = 0
 
             # Block shorts in uptrend
-            short_block_condition = (df["signal"] == -1) & (close_prices > df[ema_trend_col])
+            short_block_condition = (df["signal"] == -1) & (
+                close_prices > df[sma_trend_col]
+            )
             df.loc[short_block_condition, "signal"] = 0
         # --- End Trend Filter ---
 
