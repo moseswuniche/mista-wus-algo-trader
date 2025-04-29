@@ -108,9 +108,11 @@ class MovingAverageCrossoverStrategy(Strategy):
         if self.trend_filter_period is not None and self.trend_filter_period > 0:
             warmup_period = max(warmup_period, self.trend_filter_period)
 
-        df["signal"][:warmup_period] = 0
+        # Use .loc to set initial signals to avoid SettingWithCopyWarning
+        df.loc[df.index[:warmup_period], "signal"] = 0
 
         # Fill any remaining NaNs (e.g., from initial SMA calculation)
-        df["signal"].fillna(0, inplace=True)
+        # Assign back instead of using inplace=True to avoid warnings
+        df["signal"] = df["signal"].fillna(0)
 
         return df["signal"].astype(int)

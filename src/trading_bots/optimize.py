@@ -166,6 +166,10 @@ def generate_param_combinations(
             params["return_thresh"] = (rt_low, rt_high)
             params["volume_thresh"] = (vt_low, vt_high)
 
+            # Convert string 'None' to Python None for trend_filter_period if present
+            if params.get("trend_filter_period") == "None":
+                params["trend_filter_period"] = None
+
             # params dict now only contains keys expected by LongShortStrategy.__init__
             # (assuming it expects return_thresh and volume_thresh tuples)
 
@@ -233,6 +237,10 @@ def run_backtest_for_params(args_dict: Dict) -> Tuple[Dict[str, Any], Dict[str, 
         for k, v in params.items()
         if k not in ["stop_loss_pct", "take_profit_pct", "trailing_stop_loss_pct"]
     }
+
+    # Ensure trend_filter_period is None, not the string "None"
+    if strategy_only_params.get("trend_filter_period") == "None":
+        strategy_only_params["trend_filter_period"] = None
 
     try:
         # Instantiate the strategy with the filtered parameter combination
@@ -666,12 +674,14 @@ def main():
                 "Optimization did not yield best parameters. Results file not updated."
             )
 
-        if best_result_dict and isinstance(
-            best_result_dict.get("performance_summary"), pd.DataFrame
-        ):
-            logger.info("\n--- Performance Summary for Best Parameters ---")
-            summary_string = best_result_dict["performance_summary"].to_string()
-            logger.info(f"\n{summary_string}")
+        # --- Commented out printing the full performance summary of the best result to reduce noise ---
+        # if best_result_dict and isinstance(
+        #     best_result_dict.get("performance_summary"), pd.DataFrame
+        # ):
+        #     logger.info("\n--- Performance Summary for Best Parameters ---")
+        #     summary_string = best_result_dict["performance_summary"].to_string()
+        #     logger.info(f"\n{summary_string}")
+        # --- End Comment ---
 
         # --- Save Detailed Results if requested ---
         if args.save_details:

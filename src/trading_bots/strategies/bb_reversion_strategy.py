@@ -114,13 +114,16 @@ class BollingerBandReversionStrategy(Strategy):
         # --- End Trend Filter ---
 
         # Signals are only valid after the initial BB period AND trend period (if used)
-        warmup_period = self.bb_period
         if self.trend_filter_period is not None and self.trend_filter_period > 0:
             warmup_period = max(self.bb_period, self.trend_filter_period)
+        else:
+            warmup_period = self.bb_period
 
-        df["signal"][:warmup_period] = 0
+        # Use .loc to set initial signals to avoid SettingWithCopyWarning
+        df.loc[df.index[:warmup_period], "signal"] = 0
 
         # Fill NaNs (e.g., from initial SMA calculation)
-        df["signal"].fillna(0, inplace=True)
+        # Assign back instead of using inplace=True to avoid warnings
+        df["signal"] = df["signal"].fillna(0)
 
         return df["signal"].astype(int)

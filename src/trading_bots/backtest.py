@@ -430,6 +430,9 @@ def run_backtest(
     )
     logger.info(f"Profit Factor: {profit_factor:.2f}")
 
+    # print(performance_summary) # Commented out to reduce terminal noise
+
+    # 5. Return Results
     return {
         "cumulative_profit": logged_total_profit,
         "final_balance": final_balance,
