@@ -47,16 +47,22 @@ def load_param_grid_from_config(
     config_path: str, symbol: str, strategy_class_name: str
 ) -> Dict[str, List[Any]]:
     """Loads the parameter grid for a specific symbol and strategy from the YAML config."""
-    config_file = Path(config_path)
+    config_file = Path(config_path).resolve()
+    logger.debug(f"Attempting to load param grid from resolved path: {config_file}")
     if not config_file.is_file():
-        logger.error(f"Optimization config file not found: {config_path}")
-        raise FileNotFoundError(f"Optimization config file not found: {config_path}")
+        logger.error(
+            f"Optimization config file not found at resolved path: {config_file}"
+        )
+        raise FileNotFoundError(
+            f"Optimization config file not found at resolved path: {config_file}"
+        )
 
     try:
         with open(config_file, "r") as f:
             full_config = cast(Optional[Dict[str, Any]], yaml.safe_load(f))
             if full_config is None:
                 full_config = {}
+            logger.debug(f"Loaded full config. Keys: {list(full_config.keys())}")
     except yaml.YAMLError as e:
         logger.error(f"Error parsing YAML config file {config_path}: {e}")
         raise ValueError(f"Error parsing YAML config file {config_path}: {e}")
@@ -70,6 +76,7 @@ def load_param_grid_from_config(
             f"Invalid YAML format in {config_path}. Expected a dictionary."
         )
 
+    logger.debug(f"Looking for symbol '{symbol}' in config...")
     symbol_config = full_config.get(symbol)
     if not symbol_config or not isinstance(symbol_config, dict):
         logger.error(
@@ -78,7 +85,11 @@ def load_param_grid_from_config(
         raise ValueError(
             f"Symbol '{symbol}' not found or invalid format in config file: {config_path}"
         )
+    logger.debug(f"Found symbol config. Keys: {list(symbol_config.keys())}")
 
+    logger.debug(
+        f"Looking for strategy '{strategy_class_name}' under symbol '{symbol}'..."
+    )
     strategy_grid = symbol_config.get(strategy_class_name)
     if not strategy_grid or not isinstance(strategy_grid, dict):
         logger.error(
@@ -87,6 +98,7 @@ def load_param_grid_from_config(
         raise ValueError(
             f"Strategy '{strategy_class_name}' not found or invalid format for symbol '{symbol}' in config: {config_path}"
         )
+    logger.debug("Found strategy grid.")
 
     # Cast the final return value, ensuring it's the expected specific type
     # This assumes validation confirms the structure fits Dict[str, List[Any]]
@@ -206,6 +218,7 @@ def run_backtest_for_params(args_dict: Dict) -> Tuple[Dict[str, Any], Dict[str, 
     """
     params = args_dict["params"]
     strategy_class = args_dict["strategy_class"]
+    symbol = args_dict["symbol"]
     data = args_dict["data"]
     trade_units = args_dict["trade_units"]
     commission_bps = args_dict["commission_bps"]
@@ -224,6 +237,9 @@ def run_backtest_for_params(args_dict: Dict) -> Tuple[Dict[str, Any], Dict[str, 
     try:
         # Instantiate the strategy with the filtered parameter combination
         strategy_instance = strategy_class(**strategy_only_params)
+
+        # Log start including symbol
+        logger.info(f"Running backtest for: {strategy_class.__name__} on {symbol}")
 
         # Run the backtest with correct args
         result_dict = run_backtest(
@@ -316,8 +332,9 @@ def optimize_strategy(
         {
             "params": params,
             "strategy_class": strategy_class,
-            "data": data,  # Pass the DataFrame (read-only access)
-            "trade_units": trade_units,  # This needs to be passed correctly
+            "symbol": symbol,
+            "data": data,
+            "trade_units": trade_units,
             "commission_bps": commission_bps,
             "initial_balance": initial_balance,
         }
@@ -343,7 +360,7 @@ def optimize_strategy(
                     or completed_count == total_combinations
                 ):
                     logger.info(
-                        f"Processed {completed_count}/{total_combinations} combinations..."
+                        f"Processed {completed_count}/{total_combinations} combinations for {symbol}..."
                     )
 
                 if not result_dict:  # Skip if backtest failed (returned empty dict)
@@ -515,7 +532,7 @@ def main():
     )
     parser.add_argument(
         "--config",
-        default="config/optimization_params.yaml",
+        default="config/optimize_params.yaml",
         help="Path to the optimization parameters YAML file.",
     )
     parser.add_argument(

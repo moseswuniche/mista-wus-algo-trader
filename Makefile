@@ -42,7 +42,63 @@ FWD_ARGS      ?= --strategy RSIReversion --symbol BTCUSDT --file data/1h/BTCUSDT
 FETCH_ARGS    ?= # Default empty, provide args like --symbols BTCUSDT --interval 1h
 TRADER_ARGS   ?= --strategy LongShort --symbol BTCUSDT --interval 1m --units 0.001 --testnet # Default example
 
-.PHONY: install run lint test optimize optimize-batch fetch-data forward-test forward-test-batch all clean help trader analyze-trades analyze-details format
+# === Additions for Threaded Strategy Optimizer ===
+
+# Define the lists of symbols and strategies for threaded-strategy-optimizer
+# Override these on the command line if needed, e.g.:
+# make threaded-strategy-optimizer TSO_SYMBOLS="BTCUSDT SOLUSDT" TSO_STRATEGIES="MACross"
+TSO_SYMBOLS ?= BTCUSDT ETHUSDT ADAUSDT SOLUSDT # Example List for threaded optimizer
+TSO_STRATEGIES ?= LongShort MACross RSIReversion BBReversion # Example List for threaded optimizer
+
+# Define other parameters used by 'make optimize' for the threaded-strategy-optimizer target - allow overrides
+# Ensure these match the variables your 'make optimize' target expects
+TSO_START_DATE ?= 2023-01-01
+TSO_END_DATE ?= 2023-12-31
+TSO_INTERVAL ?= 1h
+TSO_COMMISSION ?= 7.5 # Example in bps
+TSO_BALANCE ?= 10000 # Default balance
+TSO_PROCESSES ?= $(shell python -c 'import multiprocessing; print(multiprocessing.cpu_count())') # Default processes for inner optimize runs
+TSO_METRIC ?= cumulative_profit # Default optimization metric
+TSO_CONFIG ?= config/optimize_params.yaml # Default config file
+TSO_SAVE_DETAILS ?= true # Default to save details
+TSO_DETAILS_FILE ?= # Default to auto-generated details file name
+TSO_BEST_PARAMS_FILE ?= results/optimize/best_params.yaml # Default output for best params
+
+# Phony target to run optimization for all combinations via repeated 'make optimize' calls
+.PHONY: trigger-threaded-optimizer
+trigger-threaded-optimizer:
+	@echo "Starting Threaded Strategy Optimizer for Symbols: $(TSO_SYMBOLS) and Strategies: $(TSO_STRATEGIES)..."
+	@$(foreach strategy,$(TSO_STRATEGIES), \\
+		$(foreach symbol,$(TSO_SYMBOLS), \\
+			echo ""; \\
+			echo "--- Running Optimizer Task: Strategy=$(strategy), Symbol=$(symbol) ---"; \\
+			$(MAKE) optimize \\
+				STRATEGY=$(strategy) \\
+				SYMBOL=$(symbol) \\
+				START_DATE=$(TSO_START_DATE) \\
+				END_DATE=$(TSO_END_DATE) \\
+				INTERVAL=$(TSO_INTERVAL) \\
+				COMMISSION=$(TSO_COMMISSION) \\
+				BALANCE=$(TSO_BALANCE) \\
+				PROCESSES=$(TSO_PROCESSES) \\
+				METRIC=$(TSO_METRIC) \\
+				CONFIG=$(TSO_CONFIG) \\
+				SAVE_DETAILS=$(TSO_SAVE_DETAILS) \\
+				DETAILS_FILE=$(TSO_DETAILS_FILE) \\
+				BEST_PARAMS_FILE=$(TSO_BEST_PARAMS_FILE); \\
+			if [ $$? -ne 0 ]; then \\
+				echo "!!! Optimizer Task failed for Strategy=$(strategy), Symbol=$(symbol) !!!"; \\
+				# Optionally add 'exit 1' here if you want the whole batch to stop on first failure \\
+			fi; \\
+			echo "--- Finished Optimizer Task: Strategy=$(strategy), Symbol=$(symbol) ---"; \\
+		) \\
+	)
+	@echo ""
+	@echo "Threaded Strategy Optimizer finished."
+
+# === End of Additions ===
+
+.PHONY: install run lint test optimize optimize-batch fetch-data forward-test forward-test-batch all clean help trader analyze-trades analyze-details format trigger-threaded-optimizer
 
 # Default target
 all: install lint

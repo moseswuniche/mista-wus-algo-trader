@@ -37,10 +37,18 @@ class LongShortStrategy(Strategy):
         """
         df = data[["Close", "Volume"]].copy()
         df["returns"] = np.log(df.Close / df.Close.shift())
-        df["vol_ch"] = np.log(df.Volume.div(df.Volume.shift(1)))
-        # Cap extreme volume changes
-        df.loc[df.vol_ch > 3, "vol_ch"] = np.nan
-        df.loc[df.vol_ch < -3, "vol_ch"] = np.nan
+
+        # Calculate volume change, handling potential zero volume
+        volume_ratio = df.Volume.div(df.Volume.shift(1))
+        # Replace zero or negative ratios with NaN to avoid log errors
+        volume_ratio.loc[volume_ratio <= 0] = np.nan
+        df["vol_ch"] = np.log(volume_ratio)
+
+        # Cap extreme volume changes (optional, depends on if log already handled extremes)
+        # df.loc[df.vol_ch > 3, "vol_ch"] = np.nan
+        # df.loc[df.vol_ch < -3, "vol_ch"] = np.nan
+        # Drop rows where vol_ch is NaN (due to zero volume or initial shift)
+        df.dropna(subset=["vol_ch"], inplace=True)
 
         cond1 = df.returns <= self.return_thresh[0]
         cond2 = df.vol_ch.between(self.volume_thresh[0], self.volume_thresh[1])

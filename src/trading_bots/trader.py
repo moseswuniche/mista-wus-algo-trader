@@ -588,29 +588,29 @@ class Trader:
         try:  # Outer try for the whole message processing
             if "e" in msg and msg["e"] == "kline" and "k" in msg:
                 kline = msg["k"]
-                event_time = pd.to_datetime(msg["E"], unit="ms")
-                start_time = pd.to_datetime(kline["t"], unit="ms")
-                first = float(kline["o"])
-                high = float(kline["h"])
-                low = float(kline["l"])
-                close = float(kline["c"])
-                volume = float(kline["v"])
-                complete = bool(kline["x"])
+            event_time = pd.to_datetime(msg["E"], unit="ms")
+            start_time = pd.to_datetime(kline["t"], unit="ms")
+            first = float(kline["o"])
+            high = float(kline["h"])
+            low = float(kline["l"])
+            close = float(kline["c"])
+            volume = float(kline["v"])
+            complete = bool(kline["x"])
 
-                # --- SL/TP Check on Each Tick ---
-                sl_tp_closed = self._check_sl_tp(close)
-                if sl_tp_closed:
-                    logger.debug(
-                        f"Position closed by SL/TP at price {close}. Skipping further processing for this tick."
-                    )
-                    return  # Exit callback early if SL/TP triggered a close
-                # --- End SL/TP Check ---
-
+            # --- SL/TP Check on Each Tick ---
+            sl_tp_closed = self._check_sl_tp(close)
+            if sl_tp_closed:
                 logger.debug(
-                    f"Tick: {self.symbol} | Start: {start_time} | Close: {close} | Vol: {volume} | Complete: {complete}"
+                    f"Position closed by SL/TP at price {close}. Skipping further processing for this tick."
                 )
+                return  # Exit callback early if SL/TP triggered a close
+            # --- End SL/TP Check ---
 
-                # --- Stop condition check ---
+            logger.debug(
+                f"Tick: {self.symbol} | Start: {start_time} | Close: {close} | Vol: {volume} | Complete: {complete}"
+            )
+
+            # --- Stop condition check ---
             # Check stop condition BEFORE updating data, avoid acting on partial final bar if stopped
             if self.trades >= 5:
                 if self.twm:
@@ -652,10 +652,10 @@ class Trader:
                 )
                 # Consider stopping TWM on critical errors?
                 # if self.twm: self.twm.stop()
-            else:
+            else:  # Indent this 'else' to match the 'if/elif' inside the 'try'
                 logger.warning(f"Received unexpected WebSocket message format: {msg}")
 
-        except Exception as e:  # Add the except block for the outer try
+        except Exception as e:  # This except corresponds to the try on line 588
             logger.error(f"Error processing stream message: {e}", exc_info=True)
             # Decide if error is critical and requires stopping
             # if self.twm: self.twm.stop()

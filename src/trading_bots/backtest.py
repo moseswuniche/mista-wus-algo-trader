@@ -14,13 +14,18 @@ def calculate_sharpe_ratio(
     returns: pd.Series, risk_free_rate: float = 0.0, periods_per_year: int = 365
 ) -> float:
     """Calculates the Sharpe ratio from a pandas Series of returns."""
-    if returns.empty or returns.std() == 0:
+    if returns.empty:
+        return 0.0
+    std_dev = returns.std()
+    if std_dev == 0 or pd.isna(std_dev):  # Handle zero or NaN standard deviation
+        # If mean return is positive, Sharpe is inf, otherwise 0? Convention varies.
+        # Returning 0 is safer and avoids potential inf issues downstream.
         return 0.0
     excess_returns = returns - risk_free_rate / periods_per_year
     # Cast result to float to satisfy mypy
     return cast(
         float,
-        (excess_returns.mean() / excess_returns.std()) * np.sqrt(periods_per_year),
+        (excess_returns.mean() / std_dev) * np.sqrt(periods_per_year),
     )
 
 
@@ -121,6 +126,24 @@ def run_backtest(
     tsl_peak_price: Optional[float] = None
     # last_trade_log_entry: Optional[Dict[str, Any]] = None # Not strictly needed with append/update approach
 
+    # --- Set initial SL/TP levels for the new position ---
+    # --- Convert potential string "None" from params to actual None and ensure float type ---
+    def _clean_param(p):
+        if isinstance(p, str) and p.lower() == "none":
+            return None
+        try:
+            return float(p) if p is not None else None
+        except (ValueError, TypeError):
+            logger.warning(
+                f"Could not convert SL/TP/TSL param '{p}' to float. Treating as None."
+            )
+            return None
+
+    stop_loss_pct_cleaned = _clean_param(stop_loss_pct)
+    take_profit_pct_cleaned = _clean_param(take_profit_pct)
+    trailing_stop_loss_pct_cleaned = _clean_param(trailing_stop_loss_pct)
+    # --- End Param Cleaning ---
+
     # Iterate through bars - Start from 1 to allow looking at previous close
     for i in range(1, len(data)):
         # --- Get current and previous bar data ---
@@ -179,7 +202,10 @@ def run_backtest(
             # (B) Check Stop Loss Hit (using High/Low, after TSL update)
             if not exit_triggered_this_bar and stop_loss_level is not None:
                 # Update TSL first
-                if trailing_stop_loss_pct is not None and tsl_peak_price is not None:
+                if (
+                    trailing_stop_loss_pct_cleaned is not None
+                    and tsl_peak_price is not None
+                ):
                     initial_sl = stop_loss_level
                     potential_tsl = None
                     if current_pos == 1:
@@ -187,7 +213,7 @@ def run_backtest(
                         # Check tsl_peak_price is not None before multiplying
                         if tsl_peak_price is not None:
                             potential_tsl = tsl_peak_price * (
-                                1 - trailing_stop_loss_pct
+                                1 - trailing_stop_loss_pct_cleaned
                             )
                         else:
                             potential_tsl = None  # Should not happen if check above passed, but belt-and-suspenders
@@ -201,7 +227,7 @@ def run_backtest(
                         # Check tsl_peak_price is not None before multiplying
                         if tsl_peak_price is not None:
                             potential_tsl = tsl_peak_price * (
-                                1 + trailing_stop_loss_pct
+                                1 + trailing_stop_loss_pct_cleaned
                             )
                         else:
                             potential_tsl = None
@@ -217,11 +243,19 @@ def run_backtest(
                         )
 
                 # Now check SL hit
-                if current_pos == 1 and low_price <= stop_loss_level:
+                if (
+                    stop_loss_level is not None
+                    and current_pos == 1
+                    and low_price <= stop_loss_level
+                ):
                     exit_price = stop_loss_level  # Assume execution at SL level
                     exit_reason = "Stop Loss / TSL"
                     exit_triggered_this_bar = True
-                elif current_pos == -1 and high_price >= stop_loss_level:
+                elif (
+                    stop_loss_level is not None
+                    and current_pos == -1
+                    and high_price >= stop_loss_level
+                ):
                     exit_price = stop_loss_level
                     exit_reason = "Stop Loss / TSL"
                     exit_triggered_this_bar = True
@@ -295,22 +329,27 @@ def run_backtest(
                 equity_curve.iloc[i] -= commission_entry  # Reflect commission in equity
 
                 # Calculate initial SL/TP
-                if stop_loss_pct:
-                    stop_loss_level = entry_price * (1 - stop_loss_pct * current_pos)
-                    logger.debug(f"Initial SL set: {stop_loss_level:.5f}")
+                if stop_loss_pct_cleaned is not None:
+                    if current_pos == 1:
+                        stop_loss_level = entry_price * (1 - stop_loss_pct_cleaned)
+                    elif current_pos == -1:
+                        stop_loss_level = entry_price * (1 + stop_loss_pct_cleaned)
                 else:
                     stop_loss_level = None
 
-                if take_profit_pct:
-                    take_profit_level = entry_price * (
-                        1 + take_profit_pct * current_pos
-                    )
-                    logger.debug(f"Initial TP set: {take_profit_level:.5f}")
+                if take_profit_pct_cleaned is not None:
+                    if current_pos == 1:
+                        take_profit_level = entry_price * (1 + take_profit_pct_cleaned)
+                    elif current_pos == -1:
+                        take_profit_level = entry_price * (1 - take_profit_pct_cleaned)
                 else:
                     take_profit_level = None
 
                 # Initialize TSL peak
-                tsl_peak_price = entry_price if trailing_stop_loss_pct else None
+                if trailing_stop_loss_pct_cleaned is not None:
+                    tsl_peak_price = entry_price  # Start TSL tracking
+                else:
+                    tsl_peak_price = None
                 if tsl_peak_price:
                     logger.debug(f"Initial TSL Peak set: {tsl_peak_price:.5f}")
 
@@ -362,11 +401,23 @@ def run_backtest(
         initial_balance + logged_total_profit
     )  # Logged profit is already net of commission
 
+    # Fill any remaining NaNs in equity curve before calculations
+    equity_curve = equity_curve.ffill().fillna(initial_balance)
+
     # Calculate additional metrics
-    daily_returns = equity_curve.pct_change().dropna()
-    sharpe_ratio = calculate_sharpe_ratio(
-        daily_returns
-    )  # Assumes daily data for periods_per_year
+    # Ensure equity is positive before calculating percentage change
+    valid_equity = equity_curve[equity_curve > 0]
+    if len(valid_equity) > 1:  # Need at least two points for pct_change
+        daily_returns = valid_equity.pct_change().dropna()
+        sharpe_ratio = calculate_sharpe_ratio(daily_returns)
+    else:
+        # Handle cases with no valid equity points or only one point
+        daily_returns = pd.Series(dtype=float)  # Empty series
+        sharpe_ratio = 0.0
+        logger.warning(
+            "Could not calculate Sharpe Ratio due to insufficient positive equity points."
+        )
+
     # Adjust periods_per_year if using non-daily data
     max_drawdown = calculate_max_drawdown(equity_curve)
     profit_factor = calculate_profit_factor(performance_summary)
@@ -378,9 +429,6 @@ def run_backtest(
         f"Sharpe Ratio: {sharpe_ratio:.2f}, Max Drawdown: {max_drawdown*100:.2f}%"
     )
     logger.info(f"Profit Factor: {profit_factor:.2f}")
-
-    # Fill any remaining NaNs in equity curve
-    equity_curve = equity_curve.ffill().fillna(initial_balance)
 
     return {
         "cumulative_profit": logged_total_profit,
