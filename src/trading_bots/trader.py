@@ -28,6 +28,14 @@ from .strategies import (
     BollingerBandReversionStrategy,
 )
 
+# Import filter-related utilities
+from .backtest import parse_trading_hours  # Borrow parser from backtest
+from .technical_indicators import (
+    calculate_atr,
+    calculate_sma,
+    calculate_ema,
+)  # Ensure all needed indicators are available
+
 # Setup logger
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -39,7 +47,7 @@ Symbol = str
 Interval = str
 Units = float
 Position = int  # -1: short, 0: neutral, 1: long
-HistoricalDays = float
+HistoricalDays = float  # Type alias for days of historical data
 ApiKey = str
 SecretKey = str
 
@@ -71,71 +79,48 @@ class Trader:
         secret_key: Optional[SecretKey] = None,
         testnet: bool = True,
         runtime_config_path: str = DEFAULT_RUNTIME_CONFIG,
-        stop_loss_pct: Optional[float] = None,  # Added Stop Loss percentage
-        take_profit_pct: Optional[float] = None,  # Added Take Profit percentage
-        trailing_stop_loss_pct: Optional[float] = None,  # Added Trailing SL percentage
-        max_cumulative_loss: Optional[
-            float
-        ] = None,  # Added Max Cumulative Loss threshold
+        stop_loss_pct: Optional[float] = None,
+        take_profit_pct: Optional[float] = None,
+        trailing_stop_loss_pct: Optional[float] = None,
+        max_cumulative_loss: Optional[float] = None,
+        # --- Filter Params ---
+        apply_atr_filter: bool = False,
+        atr_filter_period: int = 14,
+        atr_filter_multiplier: float = 1.5,
+        atr_filter_sma_period: int = 100,
+        apply_seasonality_filter: bool = False,
+        allowed_trading_hours_utc: Optional[str] = None,  # Expects '5-17' string format
+        apply_seasonality_to_symbols: Optional[
+            str
+        ] = None,  # Expects comma-separated string
     ) -> None:
         """
         Initializes the Trader.
-
         Args:
-            symbol: The trading symbol (e.g., "BTCUSDT").
-            bar_length: The candle bar length (e.g., "1m", "5m").
-            strategy: An instance of a class implementing the Strategy interface.
+            symbol: The trading symbol.
+            bar_length: The candle bar length.
+            strategy: An instantiated strategy object.
             units: The quantity of the asset to trade.
-            position: The initial position (default is 0).
-            api_key: Binance API key (optional, needed for live trading/orders).
-            secret_key: Binance secret key (optional).
-            testnet: Whether to use the Binance testnet (default True).
+            position: The initial position.
+            api_key: Binance API key.
+            secret_key: Binance secret key.
+            testnet: Whether to use the Binance testnet.
             runtime_config_path: Path to the runtime configuration YAML file.
-            stop_loss_pct: Optional percentage for stop loss (e.g., 0.02 for 2%).
-            take_profit_pct: Optional percentage for take profit (e.g., 0.04 for 4%).
-            trailing_stop_loss_pct: Optional percentage for trailing stop loss (e.g., 0.01 for 1%).
-            max_cumulative_loss: Optional maximum absolute cumulative loss allowed (e.g., 100.0). Bot stops if cum_profits drops below -max_cumulative_loss.
+            stop_loss_pct: Optional percentage for stop loss.
+            take_profit_pct: Optional percentage for take profit.
+            trailing_stop_loss_pct: Optional percentage for trailing stop loss.
+            max_cumulative_loss: Optional maximum absolute cumulative loss threshold.
+            apply_atr_filter: Whether to enable the ATR volatility filter.
+            atr_filter_period: Period for ATR calculation.
+            atr_filter_multiplier: Multiplier for the ATR filter threshold.
+            atr_filter_sma_period: Period for the SMA of ATR threshold.
+            apply_seasonality_filter: Whether to enable the seasonality filter.
+            allowed_trading_hours_utc: String 'HH-HH' for allowed UTC trading hours.
+            apply_seasonality_to_symbols: Comma-separated string of symbols for seasonality.
         """
-        self.symbol: Symbol = symbol
-        self.bar_length: Interval = bar_length
-        self.strategy: Strategy = strategy  # Store the strategy object
-        self.units: Units = units
-        self.position: Position = position
-        self.testnet: bool = testnet  # Store testnet status
-        self.api_key: Optional[ApiKey] = api_key
-        self.secret_key: Optional[SecretKey] = secret_key
-        self.trades: int = 0
-        self.trade_values: List[float] = []
-        self.cum_profits: float = 0.0
-
-        # --- SL/TP Attributes ---
-        self.stop_loss_pct: Optional[float] = stop_loss_pct
-        self.take_profit_pct: Optional[float] = take_profit_pct
-        self.trailing_stop_loss_pct: Optional[float] = (
-            trailing_stop_loss_pct  # Store TSL %
-        )
-        self.entry_price: Optional[float] = None
-        self.current_stop_loss: Optional[float] = None
-        self.current_take_profit: Optional[float] = None
-        self.tsl_peak_price: Optional[float] = None  # Track peak price for TSL
-        # --- End SL/TP Attributes ---
-
-        # --- Bot Stop Attributes ---
-        self.max_cumulative_loss: Optional[float] = (
-            abs(max_cumulative_loss) if max_cumulative_loss is not None else None
-        )  # Store absolute value
-        self.max_loss_stop_triggered: bool = False
-        # --- End Bot Stop Attributes ---
-
-        # Data related attributes
-        self.data: pd.DataFrame = pd.DataFrame()
-        self.prepared_data: pd.DataFrame = pd.DataFrame()
-
-        # Binance specific attributes
-        self.twm: Optional[ThreadedWebsocketManager] = None
-        self.client: Optional[Client] = None  # Added client attribute
-
-        self.available_intervals: List[Interval] = [
+        self.symbol = symbol
+        self.bar_length = bar_length
+        self.available_intervals: List[str] = [
             "1m",
             "3m",
             "5m",
@@ -152,24 +137,105 @@ class Trader:
             "1w",
             "1M",
         ]
-        # Removed strategy-specific attributes like self.return_thresh, self.volume_thresh
+        if bar_length not in self.available_intervals:
+            raise ValueError(f"Interval {bar_length} not supported by Binance API.")
 
-        # --- Runtime Config Attributes ---
+        self.strategy = strategy
+        self.units = units
+        self.position = position
+        self.trades = 0
+        self.trade_values: List[float] = []
+        self.cum_profits = 0.0
+
+        # Binance Client
+        self.testnet = testnet
+        self.api_key = api_key
+        self.secret_key = secret_key
+        self.client: Optional[Client] = None
+        self.twm: Optional[ThreadedWebsocketManager] = None
+        self._initialize_client()
+
+        # SL/TP/TSL State
+        self.stop_loss_pct = stop_loss_pct
+        self.take_profit_pct = take_profit_pct
+        self.trailing_stop_loss_pct = trailing_stop_loss_pct
+        self.entry_price: Optional[float] = None
+        self.current_stop_loss: Optional[float] = None
+        self.current_take_profit: Optional[float] = None
+        self.tsl_peak_price: Optional[float] = None
+
+        # Bot Stop State
+        self.max_cumulative_loss = (
+            abs(max_cumulative_loss) if max_cumulative_loss is not None else None
+        )
+        self.max_loss_stop_triggered = False
+
+        # Filter State
+        self.apply_atr_filter = apply_atr_filter
+        self.atr_filter_period = atr_filter_period
+        self.atr_filter_multiplier = atr_filter_multiplier
+        self.atr_filter_sma_period = atr_filter_sma_period
+        self.apply_seasonality_filter = apply_seasonality_filter
+        self.parsed_trading_hours = (
+            parse_trading_hours(allowed_trading_hours_utc)
+            if self.apply_seasonality_filter
+            else None
+        )
+        self.seasonality_symbols_list = (
+            [
+                s.strip().upper()
+                for s in apply_seasonality_to_symbols.split(",")
+                if s.strip()
+            ]
+            if apply_seasonality_to_symbols
+            else []
+        )
+        self.apply_seasonality_to_this_symbol = (
+            self.apply_seasonality_filter
+            and self.parsed_trading_hours
+            and (
+                not self.seasonality_symbols_list
+                or self.symbol in self.seasonality_symbols_list
+            )
+        )
+        if self.apply_seasonality_filter and not self.parsed_trading_hours:
+            logger.warning(
+                f"Seasonality filter enabled but invalid allowed_trading_hours_utc: '{allowed_trading_hours_utc}'. Filter inactive."
+            )
+            self.apply_seasonality_to_this_symbol = (
+                False  # Disable if hours are invalid
+            )
+
+        # Data State
+        self.data: pd.DataFrame = pd.DataFrame()
+        self.prepared_data: pd.DataFrame = pd.DataFrame()
+        self.required_historical_bars = self._determine_required_bars()
+
+        # Runtime Config State
         self.runtime_config_path = Path(runtime_config_path)
         self.last_config_check_time = time.time()
         self.last_config_mtime: Optional[float] = None
-        self.config_check_counter: int = 0
-        self._update_config_mtime()  # Initialize mtime
+        self.config_check_counter = 0
+        self._update_config_mtime()
 
-        # Initialize client immediately if keys are provided
-        if self.api_key and self.secret_key:
-            self._initialize_client()
-        else:
-            logger.warning(
-                "API key/secret not provided. Cannot execute orders or fetch private data."
-            )
-            # Initialize client without auth for public data access like historical klines?
-            # self.client = Client() # Uncomment if needed for get_historical_klines without starting TWM
+    def _determine_required_bars(self) -> int:
+        """Determine max lookback needed based on strategy and filters."""
+        max_lookback = 0
+        # Strategy params (assuming params dict stores periods)
+        for period in self.strategy.params.values():
+            if isinstance(period, int) and period > 0:
+                max_lookback = max(max_lookback, period)
+        # Filter params
+        if self.apply_atr_filter:
+            max_lookback = max(max_lookback, self.atr_filter_period)
+            if self.atr_filter_sma_period > 0:
+                # Need ATR period + SMA period for the SMA of ATR
+                max_lookback = max(
+                    max_lookback, self.atr_filter_period + self.atr_filter_sma_period
+                )
+
+        # Add buffer (e.g., 50 bars) for stability
+        return max_lookback + 50
 
     def _initialize_client(self) -> None:
         """Initializes the Binance client using stored credentials."""
@@ -234,9 +300,7 @@ class Trader:
             return  # Exit if TWM fails to start
 
         if self.bar_length in self.available_intervals:
-            self.get_most_recent(
-                symbol=self.symbol, interval=self.bar_length, days=historical_days
-            )
+            self.get_most_recent(historical_days)
             # Start socket - Indentation corrected here
             try:
                 stream_name = self.twm.start_kline_socket(
@@ -269,77 +333,56 @@ class Trader:
             if self.twm:
                 self.twm.stop()  # Stop TWM if interval is bad
 
-    def get_most_recent(
-        self, symbol: Symbol, interval: Interval, days: HistoricalDays
-    ) -> None:
-        """Fetches most recent historical klines."""
-        # Use an unauthenticated client if the main one isn't set up?
-        # Or require the main client to be initialized first?
-        # Let's assume we need *a* client, preferably the authenticated one.
-        temp_client = (
-            self.client if self.client else Client()
-        )  # Use main client or temp unauth client
-        if not temp_client:
-            logger.error("Client unavailable. Cannot fetch historical data.")
+    def get_most_recent(self, days: HistoricalDays) -> None:
+        """Fetches historical klines to initialize the DataFrame."""
+        if not self.client:
+            logger.error("Client not initialized. Cannot fetch historical data.")
             return
 
-        now = datetime.now(dt.timezone.utc)
-        past = str(now - timedelta(days=days))
-        logger.info(
-            f"Fetching {days if days > 1 else days * 24} days of recent historical data for {symbol}..."
-        )
+        now = datetime.utcnow()
+        past = now - timedelta(days=days)
+        start_str = past.strftime("%Y-%m-%d %H:%M:%S")
+        logger.info(f"Fetching historical data for {self.symbol} from {start_str}...")
 
         try:
-            bars = temp_client.get_historical_klines(
-                symbol=symbol,
-                interval=interval,
-                start_str=past,
-                end_str=None,
-                limit=1000,
+            bars = self.client.get_historical_klines(
+                symbol=self.symbol,
+                interval=self.bar_length,
+                start_str=start_str,
+                end_str=None,  # Fetch up to the latest
+                limit=1000,  # Max limit per request
             )
         except Exception as e:
             logger.error(f"Error fetching historical klines: {e}", exc_info=True)
             return
 
-        df = pd.DataFrame(bars)
-        if df.empty:
-            logger.warning(f"Fetched historical data is empty for {symbol}.")
-            self.data = pd.DataFrame(
-                columns=["Date", "Open", "High", "Low", "Close", "Volume", "Complete"]
-            ).set_index("Date")
-            return
-
-        df["Date"] = pd.to_datetime(df.iloc[:, 0], unit="ms")
-        df.columns = [
-            "Open Time",
-            "Open",
-            "High",
-            "Low",
-            "Close",
-            "Volume",
-            "Close Time",
-            "Quote Asset Volume",
-            "Number of Trades",
-            "Taker Buy Base Asset Volume",
-            "Taker Buy Quote Asset Volume",
-            "Ignore",
-            "Date",
-        ]
-        df = df[["Date", "Open", "High", "Low", "Close", "Volume"]].copy()
-        df.set_index("Date", inplace=True)
-        for column in df.columns:
-            # Use apply with pd.to_numeric for potentially better performance
-            df[column] = pd.to_numeric(df[column], errors="coerce")
-
-        # Make sure 'Complete' column is boolean
-        df["Complete"] = True
-        if len(df) > 0:
-            df.iloc[-1, df.columns.get_loc("Complete")] = False  # Set last row to False
-
-        self.data = df
-        logger.info(
-            f"Fetched and processed {len(self.data)} historical bars for {self.symbol}."
+        df = pd.DataFrame(
+            bars,
+            columns=[
+                "Time",
+                "Open",
+                "High",
+                "Low",
+                "Close",
+                "Volume",
+                "Close_time",
+                "Quote_av",
+                "Trades",
+                "Tb_base_av",
+                "Tb_quote_av",
+                "Ignore",
+            ],
         )
+        df["Time"] = pd.to_datetime(df["Time"], unit="ms")
+        df.set_index("Time", inplace=True)
+        for col in ["Open", "High", "Low", "Close", "Volume"]:
+            df[col] = pd.to_numeric(df[col])
+
+        # Keep only necessary columns
+        self.data = df[["Open", "High", "Low", "Close", "Volume"]]
+        logger.info(f"Initialized data with {len(self.data)} bars.")
+        # Pre-prepare data immediately after fetching
+        self._prepare_data()
 
     def _update_config_mtime(self):
         """Reads and stores the modification time of the config file."""
@@ -398,156 +441,83 @@ class Trader:
             return None
 
     def _apply_runtime_config(self, config: Dict[str, Any]):
-        """Applies the loaded runtime configuration to the trader.
-        Note: SL/TP percentage changes only apply to *new* trades entered after the config change.
-        """
-        # Check if bot stop triggered
-        if self.max_loss_stop_triggered:
-            logger.warning("Max loss stop triggered. Runtime config changes ignored.")
-            return False
+        """Applies parameters from the loaded runtime config if they exist and are valid."""
+        logger.debug("Applying runtime configuration...")
+        changes_applied = False
 
-        new_strategy_name = config.get("strategy_name")
-        new_params = config.get("strategy_params")
-        new_stop_loss_pct = config.get("stop_loss_pct")
-        new_take_profit_pct = config.get("take_profit_pct")
-        new_trailing_stop_loss_pct = config.get("trailing_stop_loss_pct")
-        new_max_cumulative_loss = config.get("max_cumulative_loss")  # Get max loss
+        # --- Update Trader Level Params --- #
+        # Define parameters that can be updated at runtime
+        updatable_params = {
+            "units": float,
+            "stop_loss_pct": float,
+            "take_profit_pct": float,
+            "trailing_stop_loss_pct": float,
+            "max_cumulative_loss": float,
+            "apply_atr_filter": bool,
+            "apply_seasonality_filter": bool,
+            # Potentially add ATR/Seasonality *value* params if needed,
+            # but changing periods/hours might require strategy recalculation/restart.
+        }
 
-        # --- Basic Config Validation ---
-        if not new_strategy_name:
-            logger.error("Runtime config missing 'strategy_name'.")
-            return False
-        if not isinstance(new_params, dict):
-            logger.error("Runtime config 'strategy_params' is not a dictionary.")
-            return False
-        if new_stop_loss_pct is not None and not isinstance(
-            new_stop_loss_pct, (int, float)
-        ):
-            logger.error("Runtime config 'stop_loss_pct' must be a number or null.")
-            return False
-        if new_take_profit_pct is not None and not isinstance(
-            new_take_profit_pct, (int, float)
-        ):
-            logger.error("Runtime config 'take_profit_pct' must be a number or null.")
-            return False
-        if new_trailing_stop_loss_pct is not None and not isinstance(
-            new_trailing_stop_loss_pct, (int, float)
-        ):
-            logger.error(
-                "Runtime config 'trailing_stop_loss_pct' must be a number or null."
-            )
-            return False
-        if new_max_cumulative_loss is not None and not isinstance(
-            new_max_cumulative_loss, (int, float)
-        ):
-            logger.error(
-                "Runtime config 'max_cumulative_loss' must be a number or null."
-            )
-            return False
+        for key, expected_type in updatable_params.items():
+            if key in config:
+                new_value = config[key]
+                current_value = getattr(self, key, None)
 
-        current_strategy_name = self.strategy.__class__.__name__
-        config_applied = False
+                # Handle 'None' string for optional float params
+                if (
+                    expected_type is float
+                    and isinstance(new_value, str)
+                    and new_value.lower() == "none"
+                ):
+                    new_value = None
 
-        # --- Apply Strategy/Param Changes (only if flat) ---
-        if new_strategy_name != current_strategy_name:
-            if self.position == 0:
-                if new_strategy_name in STRATEGY_CLASS_MAP:
-                    try:
-                        logger.info(
-                            f"Runtime config change: Switching strategy to {new_strategy_name}"
-                        )
-                        self.strategy = STRATEGY_CLASS_MAP[new_strategy_name](
-                            **new_params
-                        )
-                        logger.info(
-                            f"Successfully switched strategy with params: {new_params}"
-                        )
-                        config_applied = True
-                    except Exception as e:
-                        logger.error(
-                            f"Error instantiating new strategy {new_strategy_name}: {e}",
-                            exc_info=True,
-                        )
-                        logger.warning(f"Keeping old strategy {current_strategy_name}.")
-                else:
-                    logger.error(
-                        f"Unknown strategy '{new_strategy_name}' in runtime config."
-                    )
-            else:
-                logger.warning(
-                    f"Runtime config wants strategy switch, but position not flat ({self.position}). Deferring."
-                )
-        elif self.strategy.params != new_params:  # Strategy same, params changed
-            if self.position == 0:
                 try:
-                    logger.info(
-                        f"Runtime config change: Updating parameters for {current_strategy_name}"
-                    )
-                    self.strategy = STRATEGY_CLASS_MAP[current_strategy_name](
-                        **new_params
-                    )
-                    logger.info(
-                        f"Successfully updated params for {current_strategy_name} to: {new_params}"
-                    )
-                    config_applied = True
+                    # Type checking/conversion
+                    if new_value is not None and not isinstance(
+                        new_value, expected_type
+                    ):
+                        logger.warning(
+                            f"Runtime config: Invalid type for '{key}'. Expected {expected_type}, got {type(new_value)}. Skipping."
+                        )
+                        continue
+
+                    # Apply absolute value for max_cumulative_loss
+                    if key == "max_cumulative_loss" and new_value is not None:
+                        new_value = abs(new_value)
+
+                    if new_value != current_value:
+                        setattr(self, key, new_value)
+                        logger.info(
+                            f"Runtime config: Updated '{key}' from {current_value} to {new_value}"
+                        )
+                        changes_applied = True
                 except Exception as e:
                     logger.error(
-                        f"Error updating strategy parameters for {current_strategy_name}: {e}",
+                        f"Runtime config: Error applying value for '{key}': {e}",
                         exc_info=True,
                     )
-                    logger.warning(f"Keeping old strategy parameters.")
-            else:
-                logger.warning(
-                    f"Runtime config wants param update, but position not flat ({self.position}). Deferring."
-                )
 
-        # --- Apply SL/TP Changes (can apply anytime, affects next trade) ---
-        state_changed = False
-        if new_stop_loss_pct != self.stop_loss_pct:
-            logger.info(
-                f"Runtime config change: Updating stop_loss_pct from {self.stop_loss_pct} to {new_stop_loss_pct}"
-            )
-            self.stop_loss_pct = new_stop_loss_pct
-            state_changed = True
+        if not changes_applied:
+            pass  # logger.debug("Runtime config: No changes detected or applied.")
 
-        if new_take_profit_pct != self.take_profit_pct:
-            logger.info(
-                f"Runtime config change: Updating take_profit_pct from {self.take_profit_pct} to {new_take_profit_pct}"
-            )
-            self.take_profit_pct = new_take_profit_pct
-            state_changed = True
-
-        if new_trailing_stop_loss_pct != self.trailing_stop_loss_pct:
-            logger.info(
-                f"Runtime config change: Updating trailing_stop_loss_pct from {self.trailing_stop_loss_pct} to {new_trailing_stop_loss_pct}"
-            )
-            self.trailing_stop_loss_pct = new_trailing_stop_loss_pct
-            state_changed = True
-
-        if state_changed:
-            logger.info(
-                "Trader state percentages/limits updated. Changes apply going forward."
-            )
-
-        # Update Max Cumulative Loss (apply absolute value)
-        new_max_loss_abs = (
-            abs(new_max_cumulative_loss)
-            if new_max_cumulative_loss is not None
-            else None
-        )
-        if new_max_loss_abs != self.max_cumulative_loss:
-            logger.info(
-                f"Runtime config change: Updating max_cumulative_loss from {self.max_cumulative_loss} to {new_max_loss_abs}"
-            )
-            self.max_cumulative_loss = new_max_loss_abs
-            state_changed = True
-
-        return config_applied or state_changed
+        # --- IMPORTANT: Do NOT update strategy internal parameters here --- #
+        # self.strategy.some_param = config.get("strategy_param", self.strategy.some_param)
+        # This would likely cause inconsistencies as the strategy was initialized with specific params.
+        # Strategy parameter changes should typically involve restarting the bot with new config.
 
     def _check_runtime_config(self):
-        """Checks if the runtime config file has changed and applies updates."""
+        """Checks the runtime config file for updates and applies them."""
+        self.config_check_counter += 1
+        # Check less frequently than every bar
+        if self.config_check_counter < CONFIG_CHECK_INTERVAL_BARS:
+            return
+
+        self.config_check_counter = 0  # Reset counter
+
         if not self.runtime_config_path.is_file():
-            return  # No config file to check
+            # logger.debug(f"Runtime config file not found at {self.runtime_config_path}. Skipping check.")
+            return
 
         try:
             current_mtime = self.runtime_config_path.stat().st_mtime
@@ -579,178 +549,202 @@ class Trader:
             )
 
     def stream_candles(self, msg: Dict[str, Any]) -> None:
-        """Callback function for WebSocket Kline stream."""
-        # --- Stop Check ---
-        if self.max_loss_stop_triggered:
-            logger.debug("Max loss stop triggered. Ignoring incoming candle data.")
-            return
+        """Handles incoming candlestick data from the WebSocket."""
+        # Extract candle data
+        event_time = pd.to_datetime(msg["E"], unit="ms")
+        candle = msg["k"]
+        is_closed = candle["x"]
+        close_price = float(candle["c"])
+        high_price = float(candle["h"])
+        low_price = float(candle["l"])
+        # Start time of the current candle
+        start_time = pd.to_datetime(candle["t"], unit="ms")
 
-        try:  # Outer try for the whole message processing
-            if "e" in msg and msg["e"] == "kline" and "k" in msg:
-                kline = msg["k"]
-            event_time = pd.to_datetime(msg["E"], unit="ms")
-            start_time = pd.to_datetime(kline["t"], unit="ms")
-            first = float(kline["o"])
-            high = float(kline["h"])
-            low = float(kline["l"])
-            close = float(kline["c"])
-            volume = float(kline["v"])
-            complete = bool(kline["x"])
+        # Log heartbeat or closed candle info
+        # logger.debug(f"Stream: Time={event_time}, Symbol={candle['s']}, Close={close_price}, Closed={is_closed}")
 
-            # --- SL/TP Check on Each Tick ---
-            sl_tp_closed = self._check_sl_tp(close)
-            if sl_tp_closed:
-                logger.debug(
-                    f"Position closed by SL/TP at price {close}. Skipping further processing for this tick."
-                )
-                return  # Exit callback early if SL/TP triggered a close
-            # --- End SL/TP Check ---
+        # --- Check SL/TP based on latest price update (High/Low within the candle) ---
+        if self.position != 0:
+            if self._check_sl_tp(high_price, low_price):  # Pass High and Low
+                return  # Exit was triggered, wait for next bar
 
-            logger.debug(
-                f"Tick: {self.symbol} | Start: {start_time} | Close: {close} | Vol: {volume} | Complete: {complete}"
+        # --- Process ONLY closed candles ---
+        if is_closed:
+            self.config_check_counter += 1
+            # logger.info(f"Bar closed: {start_time} | Close: {close_price}")
+
+            # Format new candle data
+            new_data = pd.DataFrame(
+                {
+                    "Open": float(candle["o"]),
+                    "High": high_price,
+                    "Low": low_price,
+                    "Close": close_price,
+                    "Volume": float(candle["v"]),
+                },
+                index=[start_time],
             )
 
-            # --- Stop condition check ---
-            # Check stop condition BEFORE updating data, avoid acting on partial final bar if stopped
-            if self.trades >= 5:
-                if self.twm:
-                    try:
-                        logger.info(
-                            f"Max trades reached ({self.trades}). Stopping stream at {event_time}"
-                        )
-                        self.twm.stop()
-                        self._close_open_position("GOING NEUTRAL AND STOP (Max Trades)")
-                    except Exception as e:
-                        logger.error(
-                            f"Error stopping stream or closing position after max trades: {e}",
-                            exc_info=True,
-                        )
-                    return
+            # Append new candle to historical data
+            # Use pd.concat instead of append
+            self.data = pd.concat([self.data, new_data])
+            # Ensure data doesn't grow indefinitely (optional, keep e.g., last 5000 bars)
+            # self.data = self.data.iloc[-5000:]
 
-            # --- Update DataFrame ---
-            self.data.loc[start_time] = [first, high, low, close, volume, complete]
+            # Only keep enough data for strategy calculations + buffer
+            self.data = self.data.iloc[-self.required_historical_bars :]
 
-            # --- Actions on Completed Bar ---
-            if complete:
-                self.config_check_counter += 1
-                logger.info(
-                    f"Bar complete at {start_time}. Defining strategy and executing trades. (Counter: {self.config_check_counter})"
-                )
+            # Re-prepare data with the new bar
+            self._prepare_data()
+
+            # Define strategy based on FULL prepared data
+            if not self.prepared_data.empty:
                 self.define_strategy()
-                self.execute_trades()
+            else:
+                logger.warning("Prepared data is empty, cannot define strategy.")
 
-                # Check for runtime config changes periodically
-                if self.config_check_counter % CONFIG_CHECK_INTERVAL_BARS == 0:
-                    logger.debug(
-                        f"Checking runtime configuration (Interval: {CONFIG_CHECK_INTERVAL_BARS} bars)"
-                    )
-                    self._check_runtime_config()
+            # Check runtime config periodically
+            if self.config_check_counter >= CONFIG_CHECK_INTERVAL_BARS:
+                self._check_runtime_config()
+                self.config_check_counter = 0  # Reset counter
 
-            elif "e" in msg and msg["e"] == "error":
-                logger.error(
-                    f"WebSocket Error received: {msg.get('m', 'Unknown error')}"
+    def _prepare_data(self) -> None:
+        """Prepares data for strategy signal generation, including necessary indicators for filters."""
+        if self.data.empty:
+            self.prepared_data = pd.DataFrame()
+            return
+
+        df = self.data.copy()
+        # Add base strategy indicators (handled by strategy.generate_signals)
+
+        # Add indicators needed for filters
+        if self.apply_atr_filter:
+            df["atr"] = calculate_atr(df, period=self.atr_filter_period)
+            if self.atr_filter_sma_period > 0:
+                df["atr_sma"] = calculate_sma(
+                    df["atr"], period=self.atr_filter_sma_period
                 )
-                # Consider stopping TWM on critical errors?
-                # if self.twm: self.twm.stop()
-            else:  # Indent this 'else' to match the 'if/elif' inside the 'try'
-                logger.warning(f"Received unexpected WebSocket message format: {msg}")
 
-        except Exception as e:  # This except corresponds to the try on line 588
-            logger.error(f"Error processing stream message: {e}", exc_info=True)
-            # Decide if error is critical and requires stopping
-            # if self.twm: self.twm.stop()
+        self.prepared_data = df.copy()
+        # logger.debug(f"Prepared data updated. Shape: {self.prepared_data.shape}")
 
     def define_strategy(self) -> None:
-        """Generates strategy signals using the assigned strategy object."""
-        if self.data.empty:
-            logger.warning("Data is empty, cannot define strategy.")
-            return
-        try:
-            signals = self.strategy.generate_signals(self.data)
-            self.prepared_data = self.data.copy()
-            self.prepared_data["position"] = (
-                signals.reindex(self.data.index).fillna(0).astype(int)
-            )
-            logger.info("Strategy signals defined.")
-        except Exception as e:
-            logger.error(f"Error defining strategy signals: {e}", exc_info=True)
-
-    def execute_trades(self) -> None:
-        """Executes trades based on the latest signal. SL/TP calculation happens in _execute_order."""
-        # --- Stop Check ---
+        """Generates signals and executes trades based on the latest prepared data."""
         if self.max_loss_stop_triggered:
-            logger.warning("Max loss stop triggered. Skipping trade execution.")
+            logger.warning("Max cumulative loss reached. Stopping trading.")
+            self._stop_websocket()  # Corrected call
             return
 
         if self.prepared_data.empty:
-            logger.warning("Prepared data is empty, cannot execute trades.")
+            logger.warning("Prepared data is empty. Skipping strategy definition.")
             return
-        try:
-            latest_signal = self.prepared_data["position"].iloc[-1]
-            current_position = (
-                self.position
-            )  # Store current position before potential modification by _execute_order
 
-            order_executed = False
+        # Generate signals using the strategy object
+        signals = self.strategy.generate_signals(self.prepared_data)
 
-            if latest_signal == 1:  # Signal: Long
-                if current_position == 0:
-                    self._execute_order("BUY", "GOING LONG")
-                    order_executed = True
-                    # self.position updated inside _calculate_set_sl_tp called by _execute_order
-                elif current_position == -1:
-                    self._execute_order(
-                        "BUY", "GOING NEUTRAL FROM SHORT"
-                    )  # This resets SL/TP
-                    order_executed = True
-                    time.sleep(0.1)
-                    self._execute_order(
-                        "BUY", "GOING LONG"
-                    )  # This calculates new SL/TP
-                    # self.position updated inside _calculate_set_sl_tp
-            elif latest_signal == 0:  # Signal: Neutral
-                if current_position == 1:
-                    self._execute_order("SELL", "GOING NEUTRAL FROM LONG")
-                    order_executed = True
-                    # self.position updated inside _reset_sl_tp called by _execute_order
-                elif current_position == -1:
-                    self._execute_order("BUY", "GOING NEUTRAL FROM SHORT")
-                    order_executed = True
-                    # self.position updated inside _reset_sl_tp called by _execute_order
-            elif latest_signal == -1:  # Signal: Short
-                if current_position == 0:
-                    self._execute_order("SELL", "GOING SHORT")
-                    order_executed = True
-                    # self.position updated inside _calculate_set_sl_tp
-                elif current_position == 1:
-                    self._execute_order(
-                        "SELL", "GOING NEUTRAL FROM LONG"
-                    )  # This resets SL/TP
-                    order_executed = True
-                    time.sleep(0.1)
-                    self._execute_order(
-                        "SELL", "GOING SHORT"
-                    )  # This calculates new SL/TP
-                    # self.position updated inside _calculate_set_sl_tp
+        if signals.empty:
+            logger.warning("Strategy generated empty signals series.")
+            return
 
-            if order_executed:
-                logger.debug(
-                    f"Trade execution attempted based on signal {latest_signal}. Final position: {self.position}"
+        # Get the latest signal (for the most recently closed bar)
+        latest_signal = signals.iloc[-1]
+        current_price = self.prepared_data["Close"].iloc[-1]
+        timestamp = self.prepared_data.index[-1]
+
+        # --- Apply Filters to Entry Signals ---
+        trade_allowed_this_bar = True
+
+        # Apply Seasonality Filter
+        if self.apply_seasonality_to_this_symbol:
+            start_hour, end_hour = self.parsed_trading_hours  # type: ignore
+            ts_aware = (
+                timestamp.tz_convert("UTC")
+                if timestamp.tz
+                else timestamp.tz_localize("UTC")
+            )
+            if not (start_hour <= ts_aware.hour < end_hour):
+                trade_allowed_this_bar = False
+                logger.info(
+                    f"[{timestamp}] Trade signal ({latest_signal}) blocked by Seasonality Filter."
                 )
 
-        except IndexError:
-            logger.warning("Could not get latest signal from prepared data.")
-        except Exception as e:
-            logger.error(f"Error during trade execution logic: {e}", exc_info=True)
+        # Apply ATR Filter (if not already blocked)
+        if self.apply_atr_filter and trade_allowed_this_bar:
+            current_atr = self.prepared_data["atr"].iloc[-1]
+            threshold = 0
+            if self.atr_filter_sma_period > 0 and "atr_sma" in self.prepared_data:
+                threshold = (
+                    self.prepared_data["atr_sma"].iloc[-1] * self.atr_filter_multiplier
+                )
+            else:  # Fallback if SMA period is 0 or column missing
+                threshold = current_atr * self.atr_filter_multiplier
+
+            if pd.isna(current_atr) or pd.isna(threshold):
+                logger.warning(
+                    f"[{timestamp}] ATR ({current_atr}) or Threshold ({threshold}) is NaN. Filter inactive for this bar."
+                )
+            elif current_atr < threshold:
+                trade_allowed_this_bar = False
+                logger.info(
+                    f"[{timestamp}] Trade signal ({latest_signal}) blocked by ATR Filter (ATR={current_atr:.4f} < Threshold={threshold:.4f})."
+                )
+
+        # --- Execute Trades based on Filtered Signal ---
+        target_position = (
+            latest_signal if trade_allowed_this_bar else self.position
+        )  # Hold if filtered
+
+        if self.position == target_position:
+            # logger.debug(f"Holding position {self.position} at {timestamp}")
+            return  # No change needed
+
+        logger.info(
+            f"Signal Update at {timestamp}: Current Pos={self.position}, Target Pos={target_position}, Price={current_price}"
+        )
+        self.execute_trades(target_position)
+
+    def execute_trades(self, target_position: int) -> None:
+        """Executes trades to reach the target position."""
+        # Simplified: Assumes target_position is either 1, -1, or 0
+        # Closes existing position first if reversing or going flat
+        if self.position != 0 and target_position != self.position:
+            self._close_open_position(f"Signal change to {target_position}")
+            if self.max_loss_stop_triggered:
+                return  # Stop if max loss hit during close
+
+        # Opens new position if target is long or short
+        if target_position != 0 and self.position == 0:
+            side = "BUY" if target_position == 1 else "SELL"
+            context = f"Opening {'Long' if target_position == 1 else 'Short'} Position"
+            order = self._execute_order(
+                side=side, quantity=self.units, context_message=context
+            )
+            if order:
+                self.position = (
+                    target_position  # Update position ONLY if order succeeds
+                )
+                self._calculate_set_sl_tp(order)  # Set SL/TP based on entry
+            else:
+                logger.error("Failed to open new position. Position remains flat.")
+                self.position = 0  # Ensure position is marked as flat if entry failed
 
     def _execute_order(
-        self, side: str, context_message: str
+        self, side: str, quantity: float, context_message: str
     ) -> Optional[Dict[str, Any]]:
-        """Executes a market order, reports the trade, and manages SL/TP state."""
+        """Executes a market order via the Binance API.
+
+        Args:
+            side: "BUY" or "SELL".
+            quantity: The quantity of the asset to trade.
+            context_message: A message describing the trade context.
+
+        Returns:
+            The executed order object if successful, None otherwise.
+        """
         # --- Stop Check ---
         if self.max_loss_stop_triggered:
             logger.warning(
-                f"Max loss stop triggered. Skipping order execution: {side} {self.units} {self.symbol}"
+                f"Max loss stop triggered. Skipping order execution: {side} {quantity} {self.symbol}"
             )
             return None
 
@@ -764,14 +758,14 @@ class Trader:
         position_before_order = self.position
 
         logger.info(
-            f"Attempting to execute order: {side} {self.units} {self.symbol} ({context_message}) | Position Before: {position_before_order}"
+            f"Attempting to execute {side} order for {quantity} {self.symbol} ({context_message}) | Position Before: {position_before_order}"
         )
         try:
-            order = cast(
-                Dict[str, Any],
-                self.client.create_order(
-                    symbol=self.symbol, side=side, type="MARKET", quantity=self.units
-                ),
+            order = self.client.create_order(
+                symbol=self.symbol,
+                side=side,
+                type="MARKET",
+                quantity=quantity,
             )
 
             # Process SL/TP based on whether it was an entry or exit
@@ -812,7 +806,7 @@ class Trader:
                     order, context_message + f" (Status: {order.get('status')})"
                 )
 
-            return order
+            return order  # type: ignore [no-any-return]
         except BinanceAPIException as bae:
             logger.error(
                 f"Binance API Error executing {side} order for {self.symbol}: Code={bae.code}, Message={bae.message}"
@@ -834,10 +828,10 @@ class Trader:
         )
         if self.position == 1:
             logger.info("Executing SELL to close LONG position.")
-            self._execute_order("SELL", context_message)
+            self._execute_order("SELL", self.units, context_message)
         elif self.position == -1:
             logger.info("Executing BUY to close SHORT position.")
-            self._execute_order("BUY", context_message)
+            self._execute_order("BUY", self.units, context_message)
         else:
             logger.info("No open position to close.")
         # Explicitly set position to 0 and reset SL/TP here in case _execute_order failed or wasn't called
@@ -924,232 +918,198 @@ class Trader:
 
     # --- SL/TP Helper Methods ---
     def _calculate_set_sl_tp(self, entry_order: Dict[str, Any]):
-        """Calculates and sets initial SL/TP and TSL peak based on entry order price and updates position."""
-        if not self.stop_loss_pct and not self.take_profit_pct:
-            logger.debug("SL/TP percentages not configured. Skipping calculation.")
-            # Still need to set position if entering
-            side = entry_order["side"]
-            new_position = 1 if side == "BUY" else -1
-            self.position = new_position
-            return
-
+        """Calculates and stores SL/TP levels based on entry price."""
         try:
-            side = entry_order["side"]
-            new_position = 1 if side == "BUY" else -1
-            if self.position != 0 and self.position != -new_position:
+            # Use average fill price if available, otherwise order price
+            if "fills" in entry_order and entry_order["fills"]:
+                fill_prices = [float(fill["price"]) for fill in entry_order["fills"]]
+                fill_qtys = [float(fill["qty"]) for fill in entry_order["fills"]]
+                if sum(fill_qtys) > 0:
+                    self.entry_price = sum(
+                        p * q for p, q in zip(fill_prices, fill_qtys)
+                    ) / sum(fill_qtys)
+                else:  # Fallback if fills somehow have 0 total qty
+                    self.entry_price = float(entry_order.get("price") or 0)
+                    if self.entry_price == 0:
+                        logger.warning(
+                            "Could not determine valid entry price from order fills or order price. Using last close."
+                        )
+                        self.entry_price = self.prepared_data["Close"].iloc[
+                            -1
+                        ]  # Last resort
+            elif entry_order.get("price") and float(entry_order["price"]) > 0:
+                self.entry_price = float(entry_order["price"])  # Use order price if > 0
+            else:
+                self.entry_price = self.prepared_data["Close"].iloc[
+                    -1
+                ]  # Fallback to last close
                 logger.warning(
-                    f"Calculating SL/TP, but current position ({self.position}) is unexpected for a {side} entry."
+                    "Order price was zero or missing, using last close price for SL/TP calc."
                 )
 
-            entry_base_units = float(entry_order["executedQty"])
-            entry_quote_units = float(entry_order["cummulativeQuoteQty"])
-
-            if entry_base_units == 0:
-                logger.warning(
-                    "Entry order executed quantity is zero. Cannot calculate SL/TP."
-                )
-                # Set position even if SL/TP fails
-                self.position = new_position
+            if not self.entry_price:
+                logger.error("Entry price is zero or None, cannot set SL/TP.")
                 return
 
-            self.entry_price = round(entry_quote_units / entry_base_units, 5)
-            logger.info(f"Calculating SL/TP based on Entry Price: {self.entry_price}")
+            logger.info(f"Setting SL/TP based on Entry Price: {self.entry_price:.5f}")
 
-            # Initialize TSL peak price to entry price
-            self.tsl_peak_price = self.entry_price
-            logger.debug(f"Initialized TSL peak price: {self.tsl_peak_price}")
-
-            # Set Initial SL (will be potentially overridden by TSL later)
+            # Calculate Fixed Stop Loss
             if self.stop_loss_pct:
-                if new_position == 1:
+                if self.position == 1:
                     self.current_stop_loss = self.entry_price * (1 - self.stop_loss_pct)
-                elif new_position == -1:
+                elif self.position == -1:
                     self.current_stop_loss = self.entry_price * (1 + self.stop_loss_pct)
-                else:
-                    self.current_stop_loss = None
-                if self.current_stop_loss is not None:
-                    logger.info(
-                        f"Initial Stop Loss set at: {self.current_stop_loss:.5f}"
-                    )
+                logger.info(f"Initial Stop Loss set at: {self.current_stop_loss:.5f}")
+            else:
+                self.current_stop_loss = None
 
-            # Set TP (remains fixed)
+            # Calculate Fixed Take Profit
             if self.take_profit_pct:
-                if new_position == 1:
+                if self.position == 1:
                     self.current_take_profit = self.entry_price * (
                         1 + self.take_profit_pct
                     )
-                elif new_position == -1:
+                elif self.position == -1:
                     self.current_take_profit = self.entry_price * (
                         1 - self.take_profit_pct
                     )
-                else:
-                    self.current_take_profit = None
-                if self.current_take_profit is not None:
-                    logger.info(f"Take Profit set at: {self.current_take_profit:.5f}")
+                logger.info(f"Take Profit set at: {self.current_take_profit:.5f}")
+            else:
+                self.current_take_profit = None
 
-            # Update trader's position state
-            self.position = new_position
+            # Initialize TSL Peak Price
+            if self.trailing_stop_loss_pct:
+                self.tsl_peak_price = self.entry_price
+                logger.info(
+                    f"Trailing Stop Loss activated. Initial Peak: {self.tsl_peak_price:.5f}"
+                )
+            else:
+                self.tsl_peak_price = None
 
-        except KeyError as e:
-            logger.error(
-                f"Error calculating SL/TP: Missing key {e} in order object: {entry_order}",
-                exc_info=True,
-            )
-            self._reset_sl_tp()
-            # Try to set position anyway? Risky if entry price unknown.
-            # side = entry_order.get("side")
-            # if side: self.position = 1 if side == 'BUY' else -1
         except Exception as e:
-            logger.error(f"Error calculating or setting SL/TP: {e}", exc_info=True)
-            self._reset_sl_tp()
+            logger.error(f"Error calculating/setting SL/TP: {e}", exc_info=True)
+            self._reset_sl_tp()  # Reset levels on error
 
     def _reset_sl_tp(self):
-        """Resets SL/TP and TSL tracking variables."""
-        if self.entry_price is not None or self.tsl_peak_price is not None:
-            logger.debug("Resetting SL/TP levels, entry price, and TSL peak price.")
-            self.entry_price = None
-            self.current_stop_loss = None
-            self.current_take_profit = None
-            self.tsl_peak_price = None  # Reset TSL peak
+        """Resets SL/TP/TSL tracking variables."""
+        self.entry_price = None
+        self.current_stop_loss = None
+        self.current_take_profit = None
+        self.tsl_peak_price = None
+        # logger.debug("SL/TP/TSL levels reset.")
 
-    def _check_sl_tp(self, current_price: float) -> bool:
-        """Checks if TSL needs updating, updates SL, checks if SL/TP hit, and triggers close. Returns True if close triggered."""
-        if self.position == 0 or self.entry_price is None:
-            return False
+    def _check_sl_tp(self, current_high: float, current_low: float) -> bool:
+        """Checks if SL or TP levels were hit by the current bar's high/low price."""
+        if self.position == 0:
+            return False  # No position to check
 
-        sl_hit = False
-        tp_hit = False
-        reason = ""
-        initial_sl = (
-            self.current_stop_loss
-        )  # Store initial SL before potential TSL update
+        exit_reason = None
+        exit_price = None
 
-        # --- Trailing Stop Loss Logic ---
-        if self.trailing_stop_loss_pct is not None and self.tsl_peak_price is not None:
-            potential_tsl = None
-            # Update peak price
-            if self.position == 1:  # Long
-                self.tsl_peak_price = max(self.tsl_peak_price, current_price)
-                potential_tsl = self.tsl_peak_price * (1 - self.trailing_stop_loss_pct)
-            elif self.position == -1:  # Short
-                self.tsl_peak_price = min(self.tsl_peak_price, current_price)
-                potential_tsl = self.tsl_peak_price * (1 + self.trailing_stop_loss_pct)
+        # --- Update TSL first (if applicable) ---
+        if self.trailing_stop_loss_pct and self.tsl_peak_price is not None:
+            initial_sl = self.current_stop_loss
+            potential_tsl_stop = None
 
-            # Update current_stop_loss if TSL is more favorable
-            if potential_tsl is not None:
-                new_stop_loss = None
-                if self.position == 1:
-                    # For long, higher SL is more favorable. Use initial SL if TSL is lower.
-                    new_stop_loss = max(
-                        initial_sl if initial_sl is not None else -np.inf, potential_tsl
-                    )
-                elif self.position == -1:
-                    # For short, lower SL is more favorable. Use initial SL if TSL is higher.
-                    new_stop_loss = min(
-                        initial_sl if initial_sl is not None else np.inf, potential_tsl
-                    )
+            if self.position == 1:
+                self.tsl_peak_price = max(self.tsl_peak_price, current_high)
+                potential_tsl_stop = self.tsl_peak_price * (
+                    1 - self.trailing_stop_loss_pct
+                )
+                # TSL only moves stop loss up
+                if potential_tsl_stop > (initial_sl or -np.inf):
+                    self.current_stop_loss = potential_tsl_stop
+            elif self.position == -1:
+                self.tsl_peak_price = min(self.tsl_peak_price, current_low)
+                potential_tsl_stop = self.tsl_peak_price * (
+                    1 + self.trailing_stop_loss_pct
+                )
+                # TSL only moves stop loss down
+                if potential_tsl_stop < (initial_sl or np.inf):
+                    self.current_stop_loss = potential_tsl_stop
 
-                # Check if the stop loss actually changed
-                if (
-                    new_stop_loss is not None
-                    and new_stop_loss != self.current_stop_loss
-                ):
-                    # Check against entry price to prevent TSL from moving stop to unprofitable level immediately
-                    if (self.position == 1 and new_stop_loss > self.entry_price) or (
-                        self.position == -1 and new_stop_loss < self.entry_price
-                    ):
-                        logger.info(
-                            f"Trailing Stop Loss updated. Peak: {self.tsl_peak_price:.5f} -> New SL: {new_stop_loss:.5f}"
-                        )
-                        self.current_stop_loss = new_stop_loss
-                    else:
-                        logger.debug(
-                            f"Potential TSL update ({new_stop_loss:.5f}) ignored as it's not yet profitable relative to entry ({self.entry_price:.5f})."
-                        )
-        # --- End Trailing Stop Loss Logic ---
+            if self.current_stop_loss != initial_sl:
+                logger.info(
+                    f"Trailing Stop Loss updated to: {self.current_stop_loss:.5f} (Peak: {self.tsl_peak_price:.5f})"
+                )
 
-        # --- Check for SL/TP Hit (using potentially updated current_stop_loss) ---
-        # Check Stop Loss
+        # --- Check Exit Conditions ---
+        # Check Stop Loss first
         if self.current_stop_loss is not None:
-            if self.position == 1 and current_price <= self.current_stop_loss:
-                sl_hit = True
-                reason = f"STOP LOSS triggered (Long) at {current_price:.5f} <= {self.current_stop_loss:.5f}"
-            elif self.position == -1 and current_price >= self.current_stop_loss:
-                sl_hit = True
-                reason = f"STOP LOSS triggered (Short) at {current_price:.5f} >= {self.current_stop_loss:.5f}"
+            if self.position == 1 and current_low <= self.current_stop_loss:
+                exit_reason = "Stop Loss / TSL"
+                exit_price = self.current_stop_loss  # Assume execution at SL level
+            elif self.position == -1 and current_high >= self.current_stop_loss:
+                exit_reason = "Stop Loss / TSL"
+                exit_price = self.current_stop_loss
 
-        # Check Take Profit (only if SL not already hit)
-        if not sl_hit and self.current_take_profit is not None:
-            if self.position == 1 and current_price >= self.current_take_profit:
-                tp_hit = True
-                reason = f"TAKE PROFIT triggered (Long) at {current_price:.5f} >= {self.current_take_profit:.5f}"
-            elif self.position == -1 and current_price <= self.current_take_profit:
-                tp_hit = True
-                reason = f"TAKE PROFIT triggered (Short) at {current_price:.5f} <= {self.current_take_profit:.5f}"
+        # Check Take Profit only if SL wasn't hit
+        if exit_reason is None and self.current_take_profit is not None:
+            if self.position == 1 and current_high >= self.current_take_profit:
+                exit_reason = "Take Profit"
+                exit_price = self.current_take_profit  # Assume execution at TP level
+            elif self.position == -1 and current_low <= self.current_take_profit:
+                exit_reason = "Take Profit"
+                exit_price = self.current_take_profit
 
-        # Execute closing order if SL or TP hit
-        if sl_hit or tp_hit:
-            logger.info(reason)
-            self._close_open_position(f"Closing position due to: {reason}")
-            return True
+        # --- Execute Exit Trade if Triggered ---
+        if exit_reason:
+            logger.info(f"Exit triggered: {exit_reason} at price ~{exit_price:.5f}")
+            self._close_open_position(context_message=f"Exit due to {exit_reason}")
+            return True  # Indicate exit occurred
 
-        return False
+        return False  # No exit triggered
 
-    # --- End SL/TP Helper Methods ---
+    def _stop_websocket(self):
+        """Stops the WebSocket connection."""
+        if self.twm:
+            self.twm.stop()
 
 
 if __name__ == "__main__":
-    # Setup Argument Parser
-    parser = argparse.ArgumentParser(description="Run Binance Trading Bot")
-    parser.add_argument("--symbol", type=str, default="BTCUSDT", help="Trading symbol.")
-    parser.add_argument("--interval", type=str, default="1m", help="Kline interval.")
-    parser.add_argument("--units", type=float, default=0.001, help="Trading units.")
+    parser = argparse.ArgumentParser(description="Binance Trading Bot")
+
+    # --- Core Trading Arguments ---
     parser.add_argument(
         "--strategy",
-        type=str,
-        default="LongShort",
-        choices=["LongShort", "MACross", "RSIReversion", "BBReversion"],
-        help="Strategy to use.",
+        required=True,
+        choices=list(STRATEGY_CLASS_MAP.keys()),
+        help="Short name of the strategy class to use.",
     )
     parser.add_argument(
-        "--hist_days",
+        "--symbol", type=str, required=True, help="Trading symbol (e.g., BTCUSDT)."
+    )
+    parser.add_argument(
+        "--interval",
+        type=str,
+        required=True,
+        help="Candlestick interval (e.g., 1m, 5m, 1h).",
+    )
+    parser.add_argument(
+        "--units", type=float, required=True, help="Quantity of the asset to trade."
+    )
+    parser.add_argument(
+        "--days",
         type=float,
-        default=1 / 24,
-        help="Days of historical data to fetch.",
-    )
-    parser.add_argument(
-        "--log",
-        type=str,
-        default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        help="Set the logging level. Default: INFO",
+        default=10,
+        help="Days of historical data to load initially.",
     )
     parser.add_argument(
         "--testnet",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Use Binance Testnet (default: True). Use --no-testnet for live.",
-    )  # Changed to boolean flag
-    parser.add_argument(
-        "--aws-secret-name",
-        type=str,
-        default=None,
-        help="Name of the secret in AWS Secrets Manager.",
+        help="Use Binance Testnet (default) or Live environment.",
     )
+
+    # --- Strategy Parameter Loading ---
     parser.add_argument(
-        "--aws-region",
+        "--param-config",
         type=str,
-        default=os.getenv(
-            "AWS_DEFAULT_REGION", "us-east-1"
-        ),  # Default from env or us-east-1
-        help="AWS region for Secrets Manager.",
+        default="config/best_params.yaml",  # Assume best params are used for live/testnet
+        help="Path to YAML file containing strategy parameters (e.g., best_params.yaml).",
     )
-    parser.add_argument(
-        "--runtime-config",
-        type=str,
-        default=DEFAULT_RUNTIME_CONFIG,
-        help=f"Path to the runtime configuration YAML file (default: {DEFAULT_RUNTIME_CONFIG}).",
-    )
+
+    # --- Risk Management Arguments ---
     parser.add_argument(
         "--stop-loss",
         type=float,
@@ -1175,131 +1135,173 @@ if __name__ == "__main__":
         help="Maximum absolute cumulative loss allowed (e.g., 100.0). Bot stops if reached. Default: None",
     )
 
+    # --- Filter Arguments ---
+    parser.add_argument(
+        "--apply-atr-filter",
+        action="store_true",
+        help="Apply ATR volatility filter.",
+    )
+    parser.add_argument(
+        "--atr-filter-period",
+        type=int,
+        default=14,
+        help="Period for ATR calculation.",
+    )
+    parser.add_argument(
+        "--atr-filter-multiplier",
+        type=float,
+        default=1.5,
+        help="Multiplier for ATR volatility threshold.",
+    )
+    parser.add_argument(
+        "--atr-filter-sma-period",
+        type=int,
+        default=100,
+        help="SMA period for ATR threshold baseline.",
+    )
+    parser.add_argument(
+        "--apply-seasonality-filter",
+        action="store_true",
+        help="Apply seasonality filter (trading hours).",
+    )
+    parser.add_argument(
+        "--allowed-trading-hours-utc",
+        type=str,
+        default=None,
+        help="Allowed trading hours in UTC (e.g., '5-17'). Required if seasonality filter enabled.",
+    )
+    parser.add_argument(
+        "--apply-seasonality-to-symbols",
+        type=str,
+        default=None,
+        help="Comma-separated list of symbols to apply seasonality filter to (if empty, applies to the main symbol).",
+    )
+
+    # --- Runtime Configuration ---
+    parser.add_argument(
+        "--runtime-config",
+        type=str,
+        default=DEFAULT_RUNTIME_CONFIG,
+        help="Path to the runtime configuration YAML file.",
+    )
+
+    # --- Logging ---
+    parser.add_argument(
+        "--log",
+        type=str,
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Set the logging level.",
+    )
+
     args = parser.parse_args()
 
-    # Set logging level from args
+    # --- Set Log Level ---
     log_level = getattr(logging, args.log.upper(), logging.INFO)
     logging.getLogger().setLevel(log_level)
 
-    logger.info(f"Starting trader with args: {args}")
-    (
-        logger.warning(
-            "Using LIVE trading requires real funds and carries significant risk. Ensure API keys are for the correct environment (Live/Testnet)."
+    # --- Validate Filter Args ---
+    if args.apply_seasonality_filter and not args.allowed_trading_hours_utc:
+        logger.error(
+            "--allowed-trading-hours-utc is required when --apply-seasonality-filter is used."
         )
-        if not args.testnet
-        else None
-    )
+        exit(1)
+    # Further validation happens inside Trader.__init__
 
     # --- Load API Keys ---
-    api_key: Optional[ApiKey] = None
-    secret_key: Optional[SecretKey] = None
-    aws_secrets: Optional[Dict[str, str]] = None
+    # Using AWS Secrets Manager if keys not provided via env vars
+    api_key = os.environ.get("BINANCE_API_KEY")
+    secret_key = os.environ.get("BINANCE_API_SECRET")
 
-    # 1. Try AWS Secrets Manager if specified
-    if args.aws_secret_name:
-        aws_secrets = load_secrets_from_aws(args.aws_secret_name, args.aws_region)
-        if aws_secrets:  # If secrets were loaded successfully from AWS
-            key_name = (
-                "BINANCE_API_KEY" if not args.testnet else "BINANCE_TESTNET_API_KEY"
-            )
-            secret_name = (
-                "BINANCE_SECRET_KEY"
-                if not args.testnet
-                else "BINANCE_TESTNET_SECRET_KEY"
-            )
-            api_key = aws_secrets.get(key_name)
-            secret_key = aws_secrets.get(secret_name)
-            if api_key and secret_key:
-                logger.info(f"Loaded API keys from AWS Secret: {args.aws_secret_name}")
-            else:
-                logger.warning(
-                    f"Could not find expected keys ('{key_name}', '{secret_name}') within AWS Secret: {args.aws_secret_name}"
-                )
+    if not api_key or not secret_key:
+        logger.info(
+            "API keys not found in environment variables. Attempting to load from AWS Secrets Manager..."
+        )
+        # Specify your secret name and region
+        secret_name = "binance/api_keys"  # CHANGE THIS TO YOUR SECRET NAME
+        region_name = "us-west-2"  # CHANGE THIS TO YOUR AWS REGION
+        aws_secrets = load_secrets_from_aws(secret_name, region_name)
+        if aws_secrets:
+            api_key = aws_secrets.get("BINANCE_API_KEY")
+            secret_key = aws_secrets.get("BINANCE_API_SECRET")
+            logger.info("API keys loaded successfully from AWS Secrets Manager.")
         else:
             logger.warning(
-                f"Failed to load secrets from AWS: {args.aws_secret_name}. Falling back to environment variables."
+                "Failed to load keys from AWS. Proceeding without authentication."
             )
+            # Proceeding without keys is allowed, but orders will fail.
+            # Initialization checks will handle client setup.
 
-    # 2. Fallback to Environment Variables if not loaded from AWS
-    if not api_key or not secret_key:
-        logger.info("Attempting to load API keys from environment variables...")
-        if args.testnet:
-            api_key = os.getenv("BINANCE_TESTNET_API_KEY")
-            secret_key = os.getenv("BINANCE_TESTNET_SECRET_KEY")
-            env_var_names = "BINANCE_TESTNET_API_KEY, BINANCE_TESTNET_SECRET_KEY"
-        else:
-            api_key = os.getenv("BINANCE_API_KEY")
-            secret_key = os.getenv("BINANCE_SECRET_KEY")
-            env_var_names = "BINANCE_API_KEY, BINANCE_SECRET_KEY"
-
-        if api_key and secret_key:
-            logger.info(f"Loaded API keys from environment variables ({env_var_names})")
-        else:
-            logger.warning(
-                f"Could not find API keys in environment variables ({env_var_names}). Live trading/order execution will be disabled."
-            )
-            # Removed the hardcoded fallback - enforce secure practices
-
-    # --- Strategy Selection and Initialization ---
-    strategy_instance: Optional[Strategy] = None
-    if args.strategy == "LongShort":
-        # Define params for LongShort (could also come from config or args)
-        ls_return_thresh: Tuple[float, float] = (-0.0001, 0.0001)
-        ls_volume_thresh: Tuple[float, float] = (-3, 3)
-        strategy_instance = LongShortStrategy(
-            return_thresh=ls_return_thresh, volume_thresh=ls_volume_thresh
-        )
-    # Add elif blocks for other strategies (MACross, RSIReversion, BBReversion)
-    # elif args.strategy == "MACross":
-    #     strategy_instance = MovingAverageCrossoverStrategy(fast_period=9, slow_period=21) # Example
-    # elif args.strategy == "RSIReversion":
-    #     strategy_instance = RsiMeanReversionStrategy(rsi_period=14, oversold_threshold=30, overbought_threshold=70) # Example
-    # elif args.strategy == "BBReversion":
-    #     strategy_instance = BollingerBandReversionStrategy(bb_period=20, bb_std_dev=2.0) # Example
-    else:
-        logger.critical(
-            f"Strategy '{args.strategy}' is not implemented in the main execution block."
-        )
-        exit(1)  # Exit if strategy cannot be initialized
-
-    # --- Trader Initialization ---
-    if not api_key or not secret_key:
-        logger.warning(
-            "API Key or Secret Key is missing. Check environment variables (BINANCE_TESTNET_API_KEY, BINANCE_TESTNET_SECRET_KEY) or script defaults. Live trading disabled."
-        )
-        # Decide if you want to exit or run without trading capabilities
-        # exit(1)
-
-    trader = Trader(
-        symbol=args.symbol,
-        bar_length=args.interval,
-        strategy=strategy_instance,
-        units=args.units,
-        api_key=api_key,  # Pass potentially None keys
-        secret_key=secret_key,
-        testnet=args.testnet,
-        runtime_config_path=args.runtime_config,
-        stop_loss_pct=args.stop_loss,  # Pass SL arg
-        take_profit_pct=args.take_profit,  # Pass TP arg
-        trailing_stop_loss_pct=args.trailing_stop_loss,  # Pass TSL arg
-        max_cumulative_loss=args.max_cum_loss,  # Pass Max Loss arg
-    )
-
-    # --- Start Trading ---
-    logger.info(f"Starting trader for {args.symbol} with strategy {args.strategy}...")
+    # --- Load Strategy Parameters ---
+    strategy_params = {}
     try:
-        trader.start_trading(historical_days=args.hist_days)
-    except KeyboardInterrupt:
-        logger.info("Keyboard interrupt detected. Stopping trader...")
-        if trader.twm:
-            trader.twm.stop()
-        trader._close_open_position("STOPPED MANUALLY (Keyboard Interrupt)")
+        # Dynamically get the class based on the name
+        strategy_class = STRATEGY_CLASS_MAP.get(args.strategy)
+        if not strategy_class:
+            raise ValueError(f"Unknown strategy class name: {args.strategy}")
+
+        # Load params from the specified config file
+        from .forward_test import load_best_params_from_config  # Borrow loader
+
+        loaded_params = load_best_params_from_config(
+            config_path=args.param_config,
+            symbol=args.symbol,
+            strategy_class_name=args.strategy,
+        )
+        if loaded_params:
+            strategy_params = loaded_params
+            logger.info(
+                f"Loaded strategy parameters for {args.strategy} from {args.param_config}"
+            )
+        else:
+            logger.warning(
+                f"Could not load parameters from {args.param_config} for {args.strategy}/{args.symbol}. Using strategy defaults."
+            )
+            # Initialize with empty dict to use defaults in strategy __init__
+            strategy_params = {}
+
+        # Instantiate the strategy
+        # Ensure strategy params are cleaned (e.g., remove SL/TP if present)
+        core_strategy_params = {
+            k: v
+            for k, v in strategy_params.items()
+            if k not in ["stop_loss_pct", "take_profit_pct", "trailing_stop_loss_pct"]
+        }
+        strategy_instance = strategy_class(**core_strategy_params)
+
+    except Exception as e:
+        logger.error(f"Error loading or instantiating strategy: {e}", exc_info=True)
+        exit(1)
+
+    # --- Instantiate and Start Trader ---
+    try:
+        trader = Trader(
+            symbol=args.symbol,
+            bar_length=args.interval,
+            strategy=strategy_instance,
+            units=args.units,
+            api_key=api_key,
+            secret_key=secret_key,
+            testnet=args.testnet,
+            runtime_config_path=args.runtime_config,
+            stop_loss_pct=args.stop_loss,
+            take_profit_pct=args.take_profit,
+            trailing_stop_loss_pct=args.trailing_stop_loss,
+            max_cumulative_loss=args.max_cum_loss,
+            apply_atr_filter=args.apply_atr_filter,
+            atr_filter_period=args.atr_filter_period,
+            atr_filter_multiplier=args.atr_filter_multiplier,
+            atr_filter_sma_period=args.atr_filter_sma_period,
+            apply_seasonality_filter=args.apply_seasonality_filter,
+            allowed_trading_hours_utc=args.allowed_trading_hours_utc,
+            apply_seasonality_to_symbols=args.apply_seasonality_to_symbols,
+        )
+        trader.start_trading(historical_days=args.days)
     except Exception as e:
         logger.critical(
-            f"An critical error occurred during trading: {e}", exc_info=True
+            f"Trader initialization or execution failed: {e}", exc_info=True
         )
-        if trader.twm:
-            trader.twm.stop()
-        trader._close_open_position("STOPPED DUE TO CRITICAL ERROR")
-
-    logger.info("Trading script finished.")
+        # Attempt to stop trader if it was partially initialized
+        if "trader" in locals() and hasattr(trader, "stop_trading"):
+            trader.stop_trading()
+        exit(1)

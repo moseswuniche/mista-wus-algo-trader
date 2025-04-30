@@ -2,6 +2,7 @@ import pandas as pd
 from typing import Tuple, Optional
 
 from .base_strategy import Strategy
+from ..technical_indicators import calculate_ema
 
 
 class BollingerBandReversionStrategy(Strategy):
@@ -9,7 +10,7 @@ class BollingerBandReversionStrategy(Strategy):
     A mean-reversion strategy using Bollinger Bands.
     Goes long when the price touches or crosses below the lower band.
     Goes short when the price touches or crosses above the upper band.
-    Optionally filters signals based on a long-term trend SMA.
+    Optionally filters signals based on a long-term trend EMA.
     """
 
     def __init__(
@@ -17,6 +18,7 @@ class BollingerBandReversionStrategy(Strategy):
         bb_period: int = 20,
         bb_std_dev: float = 2.0,
         trend_filter_period: Optional[int] = None,
+        trend_filter_use_ema: bool = True,
     ) -> None:
         """
         Initializes the BollingerBandReversionStrategy.
@@ -24,7 +26,8 @@ class BollingerBandReversionStrategy(Strategy):
         Args:
             bb_period: The lookback period for the moving average and standard deviation.
             bb_std_dev: The number of standard deviations for the upper and lower bands.
-            trend_filter_period: Optional lookback period for the trend-filtering SMA. If None or 0, no filter is applied.
+            trend_filter_period: Optional lookback period for the trend-filtering MA.
+            trend_filter_use_ema: If True and trend_filter_period is set, use EMA, else SMA.
         """
         if not isinstance(bb_period, int) or bb_period <= 0:
             raise ValueError("Bollinger Band period must be a positive integer.")
@@ -43,10 +46,12 @@ class BollingerBandReversionStrategy(Strategy):
             bb_period=bb_period,
             bb_std_dev=bb_std_dev,
             trend_filter_period=trend_filter_period,
+            trend_filter_use_ema=trend_filter_use_ema,
         )
         self.bb_period = bb_period
         self.bb_std_dev = bb_std_dev
         self.trend_filter_period = trend_filter_period
+        self.trend_filter_use_ema = trend_filter_use_ema
 
     def _calculate_bollinger_bands(
         self, series: pd.Series, period: int, std_dev: float
@@ -64,12 +69,19 @@ class BollingerBandReversionStrategy(Strategy):
 
         Args:
             data: DataFrame containing at least the 'Close' price column.
+                  Requires 'High', 'Low', 'Close' if trend filter is EMA.
 
         Returns:
             A pandas Series containing the position signal (1 for long, -1 for short, 0 for neutral).
         """
         if "Close" not in data.columns:
             raise ValueError("Input DataFrame must contain a 'Close' column.")
+        if (
+            self.trend_filter_period
+            and self.trend_filter_use_ema
+            and not all(c in data.columns for c in ["High", "Low", "Close"])
+        ):
+            raise ValueError("Data must contain High, Low, Close for EMA trend filter.")
 
         df = data.copy()
         close_prices = df["Close"]
@@ -84,31 +96,31 @@ class BollingerBandReversionStrategy(Strategy):
 
         # Determine initial signal based on band touches/crosses
         df["signal"] = 0
-        df.loc[close_prices < df["bb_lower"], "signal"] = (
-            1  # Go long when below lower band
-        )
-        df.loc[close_prices > df["bb_upper"], "signal"] = (
-            -1
-        )  # Go short when above upper band
+        df.loc[close_prices <= df["bb_lower"], "signal"] = 1  # Touch or cross below
+        df.loc[close_prices >= df["bb_upper"], "signal"] = -1  # Touch or cross above
 
         # --- Apply Trend Filter ---
         if self.trend_filter_period is not None and self.trend_filter_period > 0:
-            # Calculate trend SMA
-            sma_trend_col = f"sma_{self.trend_filter_period}"
-            df[sma_trend_col] = close_prices.rolling(
-                window=self.trend_filter_period, min_periods=self.trend_filter_period
-            ).mean()
+            trend_col_name = f"trend_ma_{self.trend_filter_period}"
+            if self.trend_filter_use_ema:
+                df[trend_col_name] = calculate_ema(
+                    df, period=self.trend_filter_period
+                )  # Use HLC based EMA
+            else:
+                df[trend_col_name] = close_prices.rolling(
+                    window=self.trend_filter_period
+                ).mean()
 
             # Filter signals based on trend
             # Block longs in downtrend
             long_block_condition = (df["signal"] == 1) & (
-                close_prices < df[sma_trend_col]
+                close_prices < df[trend_col_name]
             )
             df.loc[long_block_condition, "signal"] = 0
 
             # Block shorts in uptrend
             short_block_condition = (df["signal"] == -1) & (
-                close_prices > df[sma_trend_col]
+                close_prices > df[trend_col_name]
             )
             df.loc[short_block_condition, "signal"] = 0
         # --- End Trend Filter ---
@@ -119,11 +131,10 @@ class BollingerBandReversionStrategy(Strategy):
         else:
             warmup_period = self.bb_period
 
-        # Use .loc to set initial signals to avoid SettingWithCopyWarning
-        df.loc[df.index[:warmup_period], "signal"] = 0
+        # Use .iloc to set initial signals to avoid SettingWithCopyWarning
+        df.iloc[:warmup_period, df.columns.get_loc("signal")] = 0
 
-        # Fill NaNs (e.g., from initial SMA calculation)
-        # Assign back instead of using inplace=True to avoid warnings
+        # Fill NaNs (e.g., from initial MA/BB calculation)
         df["signal"] = df["signal"].fillna(0)
 
         return df["signal"].astype(int)

@@ -108,7 +108,7 @@ def main() -> None:
         description="Run batch strategy optimization in parallel."
     )
 
-    # Arguments mirroring Makefile variables
+    # --- Core Arguments ---
     parser.add_argument(
         "--strategies",
         type=str,
@@ -121,6 +121,14 @@ def main() -> None:
     parser.add_argument(
         "--interval", type=str, required=True, help="Data interval (e.g., 1h)."
     )
+    parser.add_argument(
+        "--data-dir",
+        type=str,
+        default="./data",
+        help="Base directory for CSV data files.",
+    )
+
+    # --- Optimization Parameters ---
     parser.add_argument(
         "--start-date",
         type=str,
@@ -149,21 +157,20 @@ def main() -> None:
         help="Metric for optimization.",
     )
     parser.add_argument(
+        "--config",  # Added config path
+        default="config/optimize_params.yaml",
+        help="Path to the optimization parameters YAML file.",
+    )
+    parser.add_argument(
         "--save-details",
-        action="store_true",
+        action="store_true",  # Handled by $(if ...) in Makefile
         help="Save detailed optimization results.",
     )
     parser.add_argument(
         "--details-file",
         type=str,
         default=None,
-        help="Optional path for detailed results CSV.",
-    )
-    parser.add_argument(
-        "--data-dir",
-        type=str,
-        default="./data",
-        help="Base directory for CSV data files.",
+        help="Optional *base* path for detailed results CSV (will be suffixed).",
     )
     parser.add_argument(
         "-p",
@@ -173,6 +180,48 @@ def main() -> None:
         help=f"Number of parallel processes to use (default: {DEFAULT_PROCESSES}).",
     )
 
+    # --- Filter Arguments (Passed from Makefile) ---
+    parser.add_argument(
+        "--apply-atr-filter",
+        action="store_true",  # Handled by $(if ...) in Makefile
+        help="Apply ATR volatility filter.",
+    )
+    parser.add_argument(
+        "--atr-filter-period",
+        type=int,
+        default=14,
+        help="Period for ATR calculation.",
+    )
+    parser.add_argument(
+        "--atr-filter-multiplier",
+        type=float,
+        default=1.5,
+        help="Multiplier for ATR volatility threshold.",
+    )
+    parser.add_argument(
+        "--atr-filter-sma-period",
+        type=int,
+        default=100,
+        help="SMA period for ATR threshold baseline.",
+    )
+    parser.add_argument(
+        "--apply-seasonality-filter",
+        action="store_true",  # Handled by $(if ...) in Makefile
+        help="Apply seasonality filter (trading hours).",
+    )
+    parser.add_argument(
+        "--allowed-trading-hours-utc",
+        type=str,
+        default="",
+        help="Allowed trading hours in UTC (e.g., '5-17').",
+    )
+    parser.add_argument(
+        "--apply-seasonality-to-symbols",
+        type=str,
+        default="",
+        help="Comma-separated list of symbols to apply seasonality filter to.",
+    )
+
     args = parser.parse_args()
 
     strategies = args.strategies.split()
@@ -180,50 +229,81 @@ def main() -> None:
     data_dir = Path(args.data_dir)
     interval_dir = data_dir / args.interval
 
-    # --- Construct common arguments string ---
+    # --- Construct common arguments string FOR optimize.py ---
+    # This string will be appended to the command run by the worker
     common_args_list = [
-        f"--opt-start {args.start_date}",
-        f"--opt-end {args.end_date}",
+        f"--opt-start {shlex.quote(args.start_date)}",
+        f"--opt-end {shlex.quote(args.end_date)}",
         f"--commission {args.commission}",
         f"--balance {args.balance}",
-        f"--metric {args.metric}",
+        f"--metric {shlex.quote(args.metric)}",
+        f"--config {shlex.quote(args.config)}",  # Pass config path
+        f"--processes {args.processes}",  # Pass inner processes count
     ]
+    # Add boolean flags if set
     if args.save_details:
         common_args_list.append("--save-details")
+    if args.apply_atr_filter:
+        common_args_list.append("--apply-atr-filter")
+    if args.apply_seasonality_filter:
+        common_args_list.append("--apply-seasonality-filter")
+
+    # Add arguments with values if they are provided
     if args.details_file:
         common_args_list.append(f"--details-file {shlex.quote(args.details_file)}")
+    if args.atr_filter_period:
+        common_args_list.append(f"--atr-filter-period {args.atr_filter_period}")
+    if args.atr_filter_multiplier:
+        common_args_list.append(f"--atr-filter-multiplier {args.atr_filter_multiplier}")
+    if args.atr_filter_sma_period:
+        common_args_list.append(f"--atr-filter-sma-period {args.atr_filter_sma_period}")
+    if args.allowed_trading_hours_utc:
+        common_args_list.append(
+            f"--allowed-trading-hours-utc {shlex.quote(args.allowed_trading_hours_utc)}"
+        )
+    if args.apply_seasonality_to_symbols:
+        common_args_list.append(
+            f"--apply-seasonality-to-symbols {shlex.quote(args.apply_seasonality_to_symbols)}"
+        )
 
-    common_args_str = " ".join(common_args_list)
+    common_args_str_for_optimize_py = " ".join(common_args_list)
+    logger.debug(
+        f"Common args string for optimize.py: {common_args_str_for_optimize_py}"
+    )
 
     # --- Prepare list of jobs ---
-    jobs_to_run: List[Tuple] = []
-    job_index = 1
-
-    # Calculate total jobs first for logging
-    total_potential_jobs = len(strategies) * len(symbols)
-    actual_jobs_count = 0
     tasks_to_submit = []
+    total_potential_jobs = len(strategies) * len(symbols)
 
     logger.info(f"Preparing {total_potential_jobs} potential optimization jobs...")
     for strategy in strategies:
         for symbol in symbols:
             file_path = interval_dir / f"{symbol}_{args.interval}.csv"
-            if file_path.is_file():
-                actual_jobs_count += 1
-                # We'll pass the total count later when submitting
-                tasks_to_submit.append(
-                    (strategy, symbol, str(file_path), common_args_str)
-                )
-            else:
-                logger.warning(
-                    f"--- Skipping Strategy: {strategy}, Symbol: {symbol} - File not found: {file_path} ---"
-                )
+            # We now rely on optimize.py (via check-data-file) to handle missing files
+            # We will submit all jobs regardless of file existence here.
+            # if not file_path.is_file():
+            #     logger.warning(
+            #         f"--- Skipping Strategy: {strategy}, Symbol: {symbol} - File not found: {file_path} ---"
+            #     )
+            #     continue
 
-    if not tasks_to_submit:
-        logger.error("No valid optimization jobs found (check file paths). Exiting.")
+            tasks_to_submit.append(
+                (
+                    strategy,
+                    symbol,
+                    str(file_path),  # Pass file path even if it doesn't exist yet
+                    common_args_str_for_optimize_py,  # Pass the constructed string
+                )
+            )
+
+    actual_jobs_count = len(tasks_to_submit)
+    if actual_jobs_count == 0:
+        # This case should ideally not be hit if we submit all jobs,
+        # but kept as a safeguard if strategies/symbols lists are empty.
+        logger.error("No optimization jobs to run (check strategies/symbols). Exiting.")
         return
 
-    logger.info(f"Found {actual_jobs_count} valid optimization jobs to run.")
+    logger.info(f"Submitting {actual_jobs_count} optimization jobs to the pool.")
 
     # Add job index and total count to each task
     jobs_with_indices = [
@@ -231,11 +311,13 @@ def main() -> None:
     ]
 
     # --- Run jobs in parallel ---
-    logger.info(f"Starting parallel optimization using {args.processes} processes...")
+    # Use the --processes argument passed to this script for the pool size
+    pool_processes = args.processes
+    logger.info(f"Starting parallel optimization using {pool_processes} processes...")
 
     results = []
     try:
-        with Pool(processes=args.processes) as pool:
+        with Pool(processes=pool_processes) as pool:
             # Use imap_unordered for potentially better memory usage and responsiveness
             for result in pool.imap_unordered(
                 run_single_optimization, jobs_with_indices
@@ -248,30 +330,23 @@ def main() -> None:
 
     except KeyboardInterrupt:
         logger.warning("Keyboard interrupt received. Terminating running jobs...")
-        # Pool context manager handles cleanup
-        return  # Exit gracefully
+        # Pool context manager handles termination
     except Exception as e:
-        logger.error(f"An error occurred during multiprocessing: {e}", exc_info=True)
-        return  # Exit on unexpected error
+        logger.error(f"An error occurred during pool processing: {e}", exc_info=True)
 
     # --- Summarize Results ---
-    logger.info("--- Batch Optimization Summary ---")
-    successful_jobs = sum(1 for _, rc, _, _ in results if rc == 0)
-    failed_jobs = len(results) - successful_jobs
+    successful_jobs = sum(1 for _, ret_code, _, _ in results if ret_code == 0)
+    failed_jobs = actual_jobs_count - successful_jobs
 
-    logger.info(f"Total Jobs Run: {len(results)}")
-    logger.info(f"Successful Jobs: {successful_jobs}")
-    logger.info(f"Failed Jobs: {failed_jobs}")
+    logger.info("--- Batch Optimization Summary ---")
+    logger.info(f"Total jobs submitted: {actual_jobs_count}")
+    logger.info(f"Successful jobs: {successful_jobs}")
+    logger.info(f"Failed jobs: {failed_jobs}")
 
     if failed_jobs > 0:
-        logger.warning("Failed jobs details:")
-        for desc, rc, _, stderr in results:
-            if rc != 0:
-                logger.warning(
-                    f"  - {desc}: Exit Code {rc} {'; Stderr: ' + stderr if stderr else ''}"
-                )
+        logger.warning("Review logs for details on failed optimization runs.")
 
-    logger.info("Parallel batch optimization finished.")
+    logger.info("--- Batch optimization script finished. ---")
 
 
 if __name__ == "__main__":

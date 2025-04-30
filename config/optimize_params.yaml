@@ -8,132 +8,254 @@ BTCUSDT:
     stop_loss_pct: [None, 0.02, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.06, 0.10]
     trailing_stop_loss_pct: [None, 0.01, 0.02]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [None, 150, 175, 200]
+    ma_type: ["EMA", "SMA"]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20]
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [0, 5, 8] # UTC
+    seasonality_end_hour: [12, 17, 22] # UTC
   RsiMeanReversionStrategy:
-    rsi_period: [7, 10, 14, 21]
-    oversold_threshold: [20, 25, 30]
-    overbought_threshold: [70, 75, 80]
+    rsi_period: [14, 18, 21]
+    oversold_threshold: [15, 20, 25, 30]
+    overbought_threshold: [70, 75, 80, 85]
+    atr_period: [10, 14, 20]
+    atr_threshold_multiplier: [None, 0.5, 1.0, 1.5]
     stop_loss_pct: [None, 0.02, 0.04]
     take_profit_pct: [None, 0.03, 0.05, 0.08]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [None, 50, 75, 100]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20] # Reuse strategy's atr_period if needed
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [0, 5, 8] # UTC
+    seasonality_end_hour: [12, 17, 22] # UTC
   BollingerBandReversionStrategy:
-    bb_period: [15, 20, 25]  # Centered around 20
-    bb_std_dev: [1.8, 2.0, 2.2] # Centered around 2.0
+    bb_period: [25, 28, 30]
+    bb_std_dev: [2.0, 2.2, 2.5]
     stop_loss_pct: [None, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.07, 0.10]
     trailing_stop_loss_pct: [None, 0.02, 0.03]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [None, 150, 175, 200]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20]
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [0, 5, 8] # UTC
+    seasonality_end_hour: [12, 17, 22] # UTC
   LongShortStrategy:
-    # Parameters translated by optimize.py into return_thresh and volume_thresh tuples
-    rsi_threshold_low: [40, 45, 50] # Represents return_thresh[0]
-    rsi_threshold_high: [50, 55, 60] # Represents return_thresh[1]
-    volume_z_thresh_low: [-3.0, -2.5, -2.0] # Represents volume_thresh[0]
-    volume_z_thresh_high: [2.0, 2.5, 3.0] # Represents volume_thresh[1]
-    # Risk/Filter parameters
+    return_thresh_low: [-0.0005, -0.0003, -0.0001]
+    return_thresh_high: [0.0001, 0.0003, 0.0005]
+    volume_z_thresh_low: [-3.0, -2.5, -2.0]
+    volume_z_thresh_high: [2.0, 2.5, 3.0]
     stop_loss_pct: [None, 0.02, 0.035]
     take_profit_pct: [None, 0.05, 0.075, 0.10]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [None, 150, 175, 200]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20]
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [0, 5, 8] # UTC
+    seasonality_end_hour: [12, 17, 22] # UTC
 
 XRPUSDT:
   MovingAverageCrossoverStrategy:
-    fast_period: [9, 15, 20]
-    slow_period: [25, 50, 75]
+    fast_period: [8, 10, 12]
+    slow_period: [30, 34, 40]
     stop_loss_pct: [None, 0.02, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.06, 0.10]
-    trailing_stop_loss_pct: [None, 0.01, 0.02]
-    trend_filter_period: [None, 100, 150, 200]
+    trailing_stop_loss_pct: [0.01, 0.015, 0.02]
+    trend_filter_period: [None, 150, 175, 200]
+    ma_type: ["EMA", "SMA"]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20]
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [0, 5, 8] # UTC
+    seasonality_end_hour: [12, 17, 22] # UTC
   RsiMeanReversionStrategy:
-    rsi_period: [7, 10, 14, 21]
-    oversold_threshold: [20, 25, 30]
-    overbought_threshold: [70, 75, 80]
+    rsi_period: [10, 14, 18]
+    oversold_threshold: [15, 20, 25, 30]
+    overbought_threshold: [70, 75, 80, 85]
+    atr_period: [10, 14, 20]
+    atr_threshold_multiplier: [None, 0.5, 1.0, 1.5]
     stop_loss_pct: [None, 0.02, 0.04]
     take_profit_pct: [None, 0.03, 0.05, 0.08]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [None, 50, 75, 100]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20] # Reuse strategy's atr_period if needed
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [0, 5, 8] # UTC
+    seasonality_end_hour: [12, 17, 22] # UTC
   BollingerBandReversionStrategy:
-    bb_period: [15, 20, 25]
-    bb_std_dev: [1.8, 2.0, 2.2]
+    bb_period: [20, 25, 30]
+    bb_std_dev: [2.0, 2.2, 2.5]
     stop_loss_pct: [None, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.07, 0.10]
-    trailing_stop_loss_pct: [None, 0.02, 0.03]
-    trend_filter_period: [None, 100, 150, 200]
+    trailing_stop_loss_pct: [0.015, 0.02, 0.025, 0.03]
+    trend_filter_period: [None, 150, 175, 200]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20]
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [0, 5, 8] # UTC
+    seasonality_end_hour: [12, 17, 22] # UTC
   LongShortStrategy:
-    rsi_threshold_low: [40, 45, 50]
-    rsi_threshold_high: [50, 55, 60]
+    return_thresh_low: [-0.005, -0.003, -0.001]
+    return_thresh_high: [0.001, 0.003, 0.005]
     volume_z_thresh_low: [-3.0, -2.5, -2.0]
     volume_z_thresh_high: [2.0, 2.5, 3.0]
     stop_loss_pct: [None, 0.02, 0.035]
     take_profit_pct: [None, 0.05, 0.075, 0.10]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [None, 150, 175, 200]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20]
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [0, 5, 8] # UTC
+    seasonality_end_hour: [12, 17, 22] # UTC
 
 ALGOUSDT:
   MovingAverageCrossoverStrategy:
-    fast_period: [5, 10]
-    slow_period: [20, 30, 40]
+    fast_period: [5, 8, 10]
+    slow_period: [20, 25, 30]
     stop_loss_pct: [None, 0.02, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.06, 0.10]
     trailing_stop_loss_pct: [None, 0.01, 0.02]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [None, 150, 175, 200]
+    ma_type: ["EMA", "SMA"]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20]
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [0, 5, 8] # UTC
+    seasonality_end_hour: [12, 17, 22] # UTC
   RsiMeanReversionStrategy:
-    rsi_period: [7, 10, 14, 21]
-    oversold_threshold: [20, 25, 30]
-    overbought_threshold: [70, 75, 80]
+    rsi_period: [7, 9, 10]
+    oversold_threshold: [15, 20, 25, 30]
+    overbought_threshold: [70, 75, 80, 85]
+    atr_period: [10, 14, 20]
+    atr_threshold_multiplier: [None, 0.5, 1.0, 1.5]
     stop_loss_pct: [None, 0.02, 0.04]
     take_profit_pct: [None, 0.03, 0.05, 0.08]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [None, 50, 75, 100]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20] # Reuse strategy's atr_period if needed
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [0, 5, 8] # UTC
+    seasonality_end_hour: [12, 17, 22] # UTC
   BollingerBandReversionStrategy:
-    bb_period: [15, 20, 25]
-    bb_std_dev: [1.8, 2.0, 2.2]
+    bb_period: [20, 25, 30]
+    bb_std_dev: [2.0, 2.2, 2.5]
     stop_loss_pct: [None, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.07, 0.10]
     trailing_stop_loss_pct: [None, 0.02, 0.03]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [None, 150, 175, 200]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20]
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [0, 5, 8] # UTC
+    seasonality_end_hour: [12, 17, 22] # UTC
   LongShortStrategy:
-    rsi_threshold_low: [40, 45, 50]
-    rsi_threshold_high: [50, 55, 60]
-    volume_z_thresh_low: [-3.0, -2.5, -2.0]
-    volume_z_thresh_high: [2.0, 2.5, 3.0]
+    return_thresh_low: [-0.005, -0.003, -0.001]
+    return_thresh_high: [0.001, 0.003, 0.005]
+    volume_z_thresh_low: [-3.0, -2.5]
+    volume_z_thresh_high: [2.5, 3.0]
     stop_loss_pct: [None, 0.02, 0.035]
     take_profit_pct: [None, 0.05, 0.075, 0.10]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [None, 150, 175, 200]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20]
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [0, 5, 8] # UTC
+    seasonality_end_hour: [12, 17, 22] # UTC
 
 ETHUSDT:
   MovingAverageCrossoverStrategy:
-    fast_period: [5, 9, 13, 21]
-    slow_period: [21, 34, 50, 100]
+    fast_period: [8, 10, 12]
+    slow_period: [40, 50, 60]
     stop_loss_pct: [None, 0.02, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.06, 0.10]
     trailing_stop_loss_pct: [None, 0.01, 0.02]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [None, 150, 175, 200]
+    ma_type: ["EMA", "SMA"]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20]
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [0, 5, 8] # UTC
+    seasonality_end_hour: [12, 17, 22] # UTC
   RsiMeanReversionStrategy:
-    rsi_period: [7, 10, 14, 21]
-    oversold_threshold: [20, 25, 30]
-    overbought_threshold: [70, 75, 80]
+    rsi_period: [14, 18, 21]
+    oversold_threshold: [15, 20, 25, 30]
+    overbought_threshold: [70, 75, 80, 85]
+    atr_period: [10, 14, 20]
+    atr_threshold_multiplier: [None, 0.5, 1.0, 1.5]
     stop_loss_pct: [None, 0.02, 0.04]
     take_profit_pct: [None, 0.03, 0.05, 0.08]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [None, 50, 75, 100]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20] # Reuse strategy's atr_period if needed
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [0, 5, 8] # UTC
+    seasonality_end_hour: [12, 17, 22] # UTC
   BollingerBandReversionStrategy:
-    bb_period: [15, 20, 25]
-    bb_std_dev: [1.8, 2.0, 2.2]
+    bb_period: [25, 28, 30]
+    bb_std_dev: [2.0, 2.2, 2.5]
     stop_loss_pct: [None, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.07, 0.10]
     trailing_stop_loss_pct: [None, 0.02, 0.03]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [None, 150, 175, 200]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20]
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [0, 5, 8] # UTC
+    seasonality_end_hour: [12, 17, 22] # UTC
   LongShortStrategy:
-    rsi_threshold_low: [40, 45, 50]
-    rsi_threshold_high: [50, 55, 60]
+    return_thresh_low: [-0.0005, -0.0003, -0.0001]
+    return_thresh_high: [0.0001, 0.0003, 0.0005]
     volume_z_thresh_low: [-3.0, -2.5, -2.0]
     volume_z_thresh_high: [2.0, 2.5, 3.0]
     stop_loss_pct: [None, 0.02, 0.035]
     take_profit_pct: [None, 0.05, 0.075, 0.10]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [None, 150, 175, 200]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20]
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [0, 5, 8] # UTC
+    seasonality_end_hour: [12, 17, 22] # UTC
 
 HBARUSDT:
   MovingAverageCrossoverStrategy:
@@ -142,31 +264,62 @@ HBARUSDT:
     stop_loss_pct: [None, 0.02, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.06, 0.10]
     trailing_stop_loss_pct: [None, 0.01, 0.02]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [None, 150, 175, 200]
+    ma_type: ["EMA", "SMA"]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20]
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [0, 5, 8] # UTC
+    seasonality_end_hour: [12, 17, 22] # UTC
   RsiMeanReversionStrategy:
-    rsi_period: [7, 10, 14, 21]
-    oversold_threshold: [20, 25, 30]
-    overbought_threshold: [70, 75, 80]
+    rsi_period: [7, 10, 14]
+    oversold_threshold: [15, 20, 25, 30]
+    overbought_threshold: [70, 75, 80, 85]
+    atr_period: [10, 14, 20]
+    atr_threshold_multiplier: [None, 0.5, 1.0, 1.5]
     stop_loss_pct: [None, 0.02, 0.04]
     take_profit_pct: [None, 0.03, 0.05, 0.08]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [50, 75, 100]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20] # Reuse strategy's atr_period if needed
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [0, 5, 8] # UTC
+    seasonality_end_hour: [12, 17, 22] # UTC
   BollingerBandReversionStrategy:
     bb_period: [15, 20, 25]
     bb_std_dev: [1.8, 2.0, 2.2]
     stop_loss_pct: [None, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.07, 0.10]
     trailing_stop_loss_pct: [None, 0.02, 0.03]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [100, 125, 150]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20]
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [0, 5, 8] # UTC
+    seasonality_end_hour: [12, 17, 22] # UTC
   LongShortStrategy:
-    rsi_threshold_low: [40, 45, 50]
-    rsi_threshold_high: [50, 55, 60]
-    volume_z_thresh_low: [-3.0, -2.5, -2.0]
-    volume_z_thresh_high: [2.0, 2.5, 3.0]
+    return_thresh_low: [-0.005, -0.003, -0.001]
+    return_thresh_high: [0.001, 0.003, 0.005]
+    volume_z_thresh_low: [-3.0, -2.5]
+    volume_z_thresh_high: [2.5, 3.0]
     stop_loss_pct: [None, 0.02, 0.035]
     take_profit_pct: [None, 0.05, 0.075, 0.10]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [None, 150, 175, 200]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20]
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [0, 5, 8] # UTC
+    seasonality_end_hour: [12, 17, 22] # UTC
 
 ADAUSDT:
   MovingAverageCrossoverStrategy:
@@ -175,132 +328,267 @@ ADAUSDT:
     stop_loss_pct: [None, 0.02, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.06, 0.10]
     trailing_stop_loss_pct: [None, 0.01, 0.02]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [None, 150, 175, 200]
+    ma_type: ["EMA", "SMA"]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20]
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [0, 5, 8] # UTC
+    seasonality_end_hour: [12, 17, 22] # UTC
   RsiMeanReversionStrategy:
-    rsi_period: [7, 10, 14, 21]
-    oversold_threshold: [20, 25, 30]
-    overbought_threshold: [70, 75, 80]
+    rsi_period: [10, 14, 18]
+    oversold_threshold: [25, 28, 30]
+    overbought_threshold: [75, 80, 85]
+    atr_period: [10, 14, 20]
+    atr_threshold_multiplier: [None, 0.5, 1.0, 1.5]
     stop_loss_pct: [None, 0.02, 0.04]
     take_profit_pct: [None, 0.03, 0.05, 0.08]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [None, 50, 75, 100]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20] # Reuse strategy's atr_period if needed
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [0, 5, 8] # UTC
+    seasonality_end_hour: [12, 17, 22] # UTC
   BollingerBandReversionStrategy:
-    bb_period: [15, 20, 25]
-    bb_std_dev: [1.8, 2.0, 2.2]
+    bb_period: [20, 25, 30]
+    bb_std_dev: [2.0, 2.2, 2.5]
     stop_loss_pct: [None, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.07, 0.10]
-    trailing_stop_loss_pct: [None, 0.02, 0.03]
-    trend_filter_period: [None, 100, 150, 200]
+    trailing_stop_loss_pct: [0.015, 0.02, 0.025, 0.03]
+    trend_filter_period: [None, 150, 175, 200]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20]
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [0, 5, 8] # UTC
+    seasonality_end_hour: [12, 17, 22] # UTC
   LongShortStrategy:
-    rsi_threshold_low: [40, 45, 50]
-    rsi_threshold_high: [50, 55, 60]
+    return_thresh_low: [-0.005, -0.003, -0.001]
+    return_thresh_high: [0.001, 0.003, 0.005]
     volume_z_thresh_low: [-3.0, -2.5, -2.0]
     volume_z_thresh_high: [2.0, 2.5, 3.0]
     stop_loss_pct: [None, 0.02, 0.035]
     take_profit_pct: [None, 0.05, 0.075, 0.10]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [None, 150, 175, 200]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20]
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [0, 5, 8] # UTC
+    seasonality_end_hour: [12, 17, 22] # UTC
 
 SOLUSDT:
   MovingAverageCrossoverStrategy:
-    fast_period: [5, 9, 13, 21]
-    slow_period: [21, 34, 50, 100]
+    fast_period: [5, 9, 13]
+    slow_period: [20, 34, 50]
     stop_loss_pct: [None, 0.02, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.06, 0.10]
-    trailing_stop_loss_pct: [None, 0.01, 0.02]
-    trend_filter_period: [None, 100, 150, 200]
+    trailing_stop_loss_pct: [0.01, 0.015, 0.02]
+    trend_filter_period: [None, 150, 175, 200]
+    ma_type: ["EMA", "SMA"]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20]
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [5, 8] # UTC (Example for SOL)
+    seasonality_end_hour: [17, 20] # UTC (Example for SOL)
   RsiMeanReversionStrategy:
-    rsi_period: [7, 10, 14, 21]
-    oversold_threshold: [20, 25, 30]
-    overbought_threshold: [70, 75, 80]
+    rsi_period: [7, 9, 10]
+    oversold_threshold: [15, 20, 25, 30]
+    overbought_threshold: [70, 75, 80, 85]
+    atr_period: [10, 14, 20]
+    atr_threshold_multiplier: [None, 0.5, 1.0, 1.5]
     stop_loss_pct: [None, 0.02, 0.04]
     take_profit_pct: [None, 0.03, 0.05, 0.08]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [None, 50, 75, 100]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20] # Reuse strategy's atr_period if needed
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [5, 8] # UTC (Example for SOL)
+    seasonality_end_hour: [17, 20] # UTC (Example for SOL)
   BollingerBandReversionStrategy:
-    bb_period: [15, 20, 25]
+    bb_period: [15, 18, 20, 22, 25]
     bb_std_dev: [1.8, 2.0, 2.2]
-    stop_loss_pct: [None, 0.03, 0.05]
+    stop_loss_pct: [0.03, 0.035, 0.04]
     take_profit_pct: [None, 0.04, 0.07, 0.10]
     trailing_stop_loss_pct: [None, 0.02, 0.03]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [None, 150, 175, 200]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20]
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [5, 8] # UTC (Example for SOL)
+    seasonality_end_hour: [17, 20] # UTC (Example for SOL)
   LongShortStrategy:
-    rsi_threshold_low: [40, 45, 50]
-    rsi_threshold_high: [50, 55, 60]
+    return_thresh_low: [-0.005, -0.003, -0.001]
+    return_thresh_high: [0.001, 0.003, 0.005]
     volume_z_thresh_low: [-3.0, -2.5, -2.0]
     volume_z_thresh_high: [2.0, 2.5, 3.0]
     stop_loss_pct: [None, 0.02, 0.035]
     take_profit_pct: [None, 0.05, 0.075, 0.10]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [None, 150, 175, 200]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20]
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [5, 8] # UTC (Example for SOL)
+    seasonality_end_hour: [17, 20] # UTC (Example for SOL)
 
 LTCUSDT:
   MovingAverageCrossoverStrategy:
     fast_period: [5, 9, 13, 21]
     slow_period: [21, 34, 50, 100]
     stop_loss_pct: [None, 0.02, 0.03, 0.05]
-    take_profit_pct: [None, 0.04, 0.06, 0.10]
+    take_profit_pct: [0.04, 0.05, 0.06]
     trailing_stop_loss_pct: [None, 0.01, 0.02]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [None, 150, 175, 200]
+    ma_type: ["EMA", "SMA"]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20]
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [0, 5, 8] # UTC
+    seasonality_end_hour: [12, 17, 22] # UTC
   RsiMeanReversionStrategy:
-    rsi_period: [7, 10, 14, 21]
-    oversold_threshold: [20, 25, 30]
-    overbought_threshold: [70, 75, 80]
+    rsi_period: [10, 12, 14]
+    oversold_threshold: [15, 20, 25, 30]
+    overbought_threshold: [70, 75, 80, 85]
+    atr_period: [10, 14, 20]
+    atr_threshold_multiplier: [None, 0.5, 1.0, 1.5]
     stop_loss_pct: [None, 0.02, 0.04]
     take_profit_pct: [None, 0.03, 0.05, 0.08]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [None, 50, 75, 100]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20] # Reuse strategy's atr_period if needed
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [0, 5, 8] # UTC
+    seasonality_end_hour: [12, 17, 22] # UTC
   BollingerBandReversionStrategy:
-    bb_period: [15, 20, 25]
-    bb_std_dev: [1.8, 2.0, 2.2]
+    bb_period: [20, 25, 30]
+    bb_std_dev: [2.0, 2.2, 2.5]
     stop_loss_pct: [None, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.07, 0.10]
     trailing_stop_loss_pct: [None, 0.02, 0.03]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [None, 150, 175, 200]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20]
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [0, 5, 8] # UTC
+    seasonality_end_hour: [12, 17, 22] # UTC
   LongShortStrategy:
-    rsi_threshold_low: [40, 45, 50]
-    rsi_threshold_high: [50, 55, 60]
+    return_thresh_low: [-0.005, -0.003, -0.001]
+    return_thresh_high: [0.001, 0.003, 0.005]
     volume_z_thresh_low: [-3.0, -2.5, -2.0]
     volume_z_thresh_high: [2.0, 2.5, 3.0]
     stop_loss_pct: [None, 0.02, 0.035]
     take_profit_pct: [None, 0.05, 0.075, 0.10]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [None, 150, 175, 200]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20]
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [0, 5, 8] # UTC
+    seasonality_end_hour: [12, 17, 22] # UTC
 
 SUIUSDT:
   MovingAverageCrossoverStrategy:
-    fast_period: [5, 9, 13, 21]
-    slow_period: [21, 34, 50, 100]
+    fast_period: [8, 10, 12]
+    slow_period: [40, 50, 60]
     stop_loss_pct: [None, 0.02, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.06, 0.10]
     trailing_stop_loss_pct: [None, 0.01, 0.02]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [None, 150, 175, 200]
+    ma_type: ["EMA", "SMA"]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20]
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [5, 8] # UTC (Example for SUI)
+    seasonality_end_hour: [17, 20] # UTC (Example for SUI)
   RsiMeanReversionStrategy:
-    rsi_period: [7, 10, 14, 21]
-    oversold_threshold: [20, 25, 30]
-    overbought_threshold: [70, 75, 80]
+    rsi_period: [7, 9, 10]
+    oversold_threshold: [15, 20, 25, 30]
+    overbought_threshold: [70, 75, 80, 85]
+    atr_period: [10, 14, 20]
+    atr_threshold_multiplier: [None, 0.5, 1.0, 1.5]
     stop_loss_pct: [None, 0.02, 0.04]
     take_profit_pct: [None, 0.03, 0.05, 0.08]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [50, 75, 100]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20] # Reuse strategy's atr_period if needed
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [5, 8] # UTC (Example for SUI)
+    seasonality_end_hour: [17, 20] # UTC (Example for SUI)
   BollingerBandReversionStrategy:
-    bb_period: [15, 20, 25]
-    bb_std_dev: [1.8, 2.0, 2.2]
+    bb_period: [14, 17, 20]
+    bb_std_dev: [1.8, 2.0, 2.2, 2.5]
     stop_loss_pct: [None, 0.03, 0.05]
     take_profit_pct: [None, 0.04, 0.07, 0.10]
     trailing_stop_loss_pct: [None, 0.02, 0.03]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [100, 125, 150]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20]
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [5, 8] # UTC (Example for SUI)
+    seasonality_end_hour: [17, 20] # UTC (Example for SUI)
   LongShortStrategy:
-    rsi_threshold_low: [40, 45, 50]
-    rsi_threshold_high: [50, 55, 60]
+    return_thresh_low: [-0.005, -0.003, -0.001]
+    return_thresh_high: [0.001, 0.003, 0.005]
     volume_z_thresh_low: [-3.0, -2.5, -2.0]
     volume_z_thresh_high: [2.0, 2.5, 3.0]
     stop_loss_pct: [None, 0.02, 0.035]
     take_profit_pct: [None, 0.05, 0.075, 0.10]
     trailing_stop_loss_pct: [None, 0.015, 0.025]
-    trend_filter_period: [None, 100, 150, 200]
+    trend_filter_period: [None, 150, 175, 200]
+    trend_filter_use_ema: [true, false]
+    # Filter parameters
+    atr_filter_period: [14, 20]
+    atr_filter_threshold: [None, 1.0, 1.5, 2.0] # Multiplier of ATR
+    apply_seasonality: [true, false]
+    seasonality_start_hour: [5, 8] # UTC (Example for SUI)
+    seasonality_end_hour: [17, 20] # UTC (Example for SUI)
 
-# Add configurations for other symbols as needed
-# Note: Renamed keys in LongShortStrategy section to reflect actual expected params
-#       (rsi_threshold_low/high, volume_z_thresh_low/high)
-#       Removed unnecessary placeholders for EMA/RSI periods for LongShortStrategy. 
+# --- Universal Parameters (applied if not symbol-specific) ---
+# These are harder to represent directly in the grid per symbol/strategy.
+# Suggestion: Handle these in the strategy logic or backtester setup.
+# - ATR Threshold Filter (e.g., 1.5x 14-day ATR)
+# - Seasonality Adjustments (e.g., trading hours 05:00-17:00 UTC for SOL/SUI)
+# - Walk-Forward Optimization (Backtester setting)
+# - Use EMA instead of SMA (Strategy logic change)
+# - Dynamic Beta Hedging (LongShortStrategy logic change)
+# - ATR-Adjusted RSI thresholds (RsiMeanReversionStrategy logic change)
+# - Z-score return thresholds (LongShortStrategy logic change)
+
+# Note: Some parameter names in LongShortStrategy might need adjustment
+# if the optimization script expects different keys for Z-score/beta.
+# E.g., 'rsi_threshold_low' might become 'return_z_score_low' or similar.
+# Placeholder values used for return_thresh_low/high where Z-score is suggested. 

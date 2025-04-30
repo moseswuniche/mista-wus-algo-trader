@@ -6,6 +6,7 @@ from io import BytesIO
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from typing import Dict, Any, Optional
+import numpy as np
 
 # Setup logger
 logger = logging.getLogger(__name__)
@@ -44,6 +45,56 @@ def plot_equity_curve(
     except Exception as e:
         logger.error(
             f"Error generating or saving plot {plot_filename}: {e}", exc_info=True
+        )
+        return False
+
+
+def plot_rolling_metric(
+    pnl_series: pd.Series,
+    window: int,
+    plot_filename: Path,
+    metric_name: str = "Sharpe Ratio (Trade PnL)",
+    title_prefix: str = "Rolling Metric",
+):
+    """Generates and saves a rolling Sharpe ratio (or similar mean/std metric) plot based on PnL series."""
+    if pnl_series is None or pnl_series.empty or len(pnl_series) < window:
+        logger.warning(
+            f"PnL series too short ({len(pnl_series)}<{window}) or empty for rolling {metric_name} plot ({plot_filename.stem}). Skipping."
+        )
+        return False
+    try:
+        # Calculate rolling mean and std dev of PnL
+        rolling_mean = pnl_series.rolling(window=window, min_periods=window).mean()
+        rolling_std = pnl_series.rolling(window=window, min_periods=window).std()
+
+        # Calculate rolling Sharpe (handle division by zero)
+        rolling_metric = rolling_mean / rolling_std.replace(0, np.nan)
+        rolling_metric.dropna(inplace=True) # Drop initial NaNs
+
+        if rolling_metric.empty:
+            logger.warning(f"Rolling {metric_name} calculation resulted in empty series. Skipping plot.")
+            return False
+
+        fig, ax = plt.subplots(figsize=(12, 6))
+        ax.plot(rolling_metric.index, rolling_metric.values, label=f'Rolling {metric_name} ({window}-trade)')
+
+        # Formatting
+        ax.set_title(f"{title_prefix}: Rolling {metric_name} Over Trades")
+        ax.set_xlabel("Trade Number")
+        ax.set_ylabel(metric_name)
+        ax.grid(True)
+        ax.legend()
+
+        plot_filename.parent.mkdir(parents=True, exist_ok=True)
+        plt.tight_layout()
+        plt.savefig(plot_filename)
+        plt.close(fig)
+        logger.info(f"Rolling {metric_name} plot saved to: {plot_filename}")
+        return True
+    except Exception as e:
+        logger.error(
+            f"Error generating or saving rolling {metric_name} plot {plot_filename}: {e}",
+            exc_info=True,
         )
         return False
 
