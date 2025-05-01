@@ -109,7 +109,7 @@ def run_backtest(
     atr_sma_from_grid: Optional[int] = None,
     apply_seasonality_from_grid: Optional[bool] = None,
     trading_hours_from_grid: Optional[str] = None,
-    seasonality_symbols_from_grid: Optional[str] = None, # Added for completeness
+    seasonality_symbols_from_grid: Optional[str] = None,  # Added for completeness
 ) -> Dict[str, Any]:
     """
     Runs a bar-by-bar backtest simulating intra-bar SL/TP/TSL checks and applying filters.
@@ -152,37 +152,95 @@ def run_backtest(
     # --- Determine Effective Parameters (Grid > Global Default) ---
     effective_sl = sl_from_grid if sl_from_grid is not None else stop_loss_pct
     effective_tp = tp_from_grid if tp_from_grid is not None else take_profit_pct
-    effective_tsl = tsl_from_grid if tsl_from_grid is not None else trailing_stop_loss_pct
+    effective_tsl = (
+        tsl_from_grid if tsl_from_grid is not None else trailing_stop_loss_pct
+    )
 
-    effective_apply_atr = apply_atr_from_grid if apply_atr_from_grid is not None else apply_atr_filter
-    effective_atr_period = atr_period_from_grid if atr_period_from_grid is not None else atr_filter_period
-    effective_atr_multiplier = atr_multiplier_from_grid if atr_multiplier_from_grid is not None else atr_filter_multiplier
-    effective_atr_sma_period = atr_sma_from_grid if atr_sma_from_grid is not None else atr_filter_sma_period
+    effective_apply_atr = (
+        apply_atr_from_grid if apply_atr_from_grid is not None else apply_atr_filter
+    )
+    effective_atr_period = (
+        atr_period_from_grid if atr_period_from_grid is not None else atr_filter_period
+    )
+    effective_atr_multiplier = (
+        atr_multiplier_from_grid
+        if atr_multiplier_from_grid is not None
+        else atr_filter_multiplier
+    )
+    effective_atr_sma_period = (
+        atr_sma_from_grid if atr_sma_from_grid is not None else atr_filter_sma_period
+    )
 
-    effective_apply_seasonality = apply_seasonality_from_grid if apply_seasonality_from_grid is not None else apply_seasonality_filter
-    effective_trading_hours = trading_hours_from_grid if trading_hours_from_grid is not None else allowed_trading_hours_utc
-    effective_seasonality_symbols = seasonality_symbols_from_grid if seasonality_symbols_from_grid is not None else apply_seasonality_to_symbols
+    effective_apply_seasonality = (
+        apply_seasonality_from_grid
+        if apply_seasonality_from_grid is not None
+        else apply_seasonality_filter
+    )
+    effective_trading_hours = (
+        trading_hours_from_grid
+        if trading_hours_from_grid is not None
+        else allowed_trading_hours_utc
+    )
+    effective_seasonality_symbols = (
+        seasonality_symbols_from_grid
+        if seasonality_symbols_from_grid is not None
+        else apply_seasonality_to_symbols
+    )
     # --- End Effective Parameter Determination ---
 
     required_cols = ["Open", "High", "Low", "Close"]
-    # Check data requirements based on EFFECTIVE settings
+    # --- Recalculate ATR/SMA if needed (Option 1) ---
+    # Make a copy to avoid modifying the original data potentially shared across processes
+    local_data = data.copy()
     if effective_apply_atr:
-        # ** Important: Ensure ATR is calculated based on the EFFECTIVE period **
-        # If atr_period_from_grid is used, the pre-calculated 'atr' column might be wrong.
-        # Ideally, ATR calculation should happen here or be passed dynamically.
-        # For now, we assume the pre-calculated 'atr' column exists and matches the
-        # most common period used (likely the global default).
-        # If atr_period_from_grid differs significantly, this could be inaccurate.
-        # A better solution involves recalculating ATR if needed or ensuring data
-        # passed to workers contains ATR for all periods in the grid.
-        logger.warning(f"Using pre-calculated 'atr' column. Ensure it corresponds to effective ATR period: {effective_atr_period}")
-        required_cols.extend(["atr"])
-        if effective_atr_sma_period > 0:
-            logger.warning(f"Using pre-calculated 'atr_sma' column. Ensure it corresponds to effective ATR SMA period: {effective_atr_sma_period}")
-            required_cols.extend(["atr_sma"])
+        # Ensure the technical_indicators module and calculate_atr function are imported
+        from .technical_indicators import calculate_atr # Ensure import is here
 
-    if not all(col in data.columns for col in required_cols):
-        missing_cols = [col for col in required_cols if col not in data.columns]
+        logger.info(
+            f"Recalculating ATR with period {effective_atr_period} for this run."
+        )
+        # Recalculate ATR using the effective period
+        local_data["atr_effective"] = calculate_atr(
+            local_data, period=effective_atr_period
+        )
+        # Ensure 'atr_effective' is now the required column, not 'atr'
+        if "atr" in required_cols: required_cols.remove("atr")
+        required_cols.append("atr_effective")
+
+
+        if effective_atr_sma_period > 0:
+            logger.info(
+                f"Recalculating ATR SMA with period {effective_atr_sma_period} for this run."
+            )
+            # Recalculate ATR SMA using the effective SMA period on the *newly calculated* ATR
+            local_data["atr_sma_effective"] = (
+                local_data["atr_effective"]
+                .rolling(window=effective_atr_sma_period, min_periods=effective_atr_sma_period) # Add min_periods
+                .mean()
+            )
+             # Ensure 'atr_sma_effective' is now the required column, not 'atr_sma'
+            if "atr_sma" in required_cols: required_cols.remove("atr_sma")
+            required_cols.append("atr_sma_effective")
+
+        # Remove the potentially confusing warning about pre-calculated columns
+        # logger.warning(...) - removed
+
+
+    # Check data requirements based on EFFECTIVE settings
+    # if effective_apply_atr: # This block is now handled above
+    #     logger.warning(
+    #         f"Using pre-calculated 'atr' column. Ensure it corresponds to effective ATR period: {effective_atr_period}"
+    #     )
+    #     required_cols.extend(["atr"])
+    #     if effective_atr_sma_period > 0:
+    #         logger.warning(
+    #             f"Using pre-calculated 'atr_sma' column. Ensure it corresponds to effective ATR SMA period: {effective_atr_sma_period}"
+    #         )
+    #         required_cols.extend(["atr_sma"])
+
+    # Check against local_data which now potentially has recalculated indicators
+    if not all(col in local_data.columns for col in required_cols):
+        missing_cols = [col for col in required_cols if col not in local_data.columns]
         msg = f"Data must contain required columns based on effective settings. Missing: {missing_cols}"
         logger.error(msg)
         raise ValueError(msg)
@@ -219,8 +277,9 @@ def run_backtest(
     )
 
     # 1. Generate Signals (still needed for entry/exit triggers)
-    signals = strategy.generate_signals(data)
-    signals = signals.reindex(data.index).fillna(0).astype(int)
+    # Use local_data which might have recalculated indicators if needed by strategy
+    signals = strategy.generate_signals(local_data)
+    signals = signals.reindex(local_data.index).fillna(0).astype(int)
 
     # 2. Initialize Backtest State
     trade_log: List[Dict[str, Any]] = []
@@ -231,7 +290,8 @@ def run_backtest(
     winning_trades = 0
     balance = initial_balance
     commission_rate = commission_bps / 10000.0
-    equity_curve = pd.Series(index=data.index, dtype=float)
+    # Initialize using local_data index
+    equity_curve = pd.Series(index=local_data.index, dtype=float)
     equity_curve.iloc[0] = initial_balance
 
     stop_loss_level: Optional[float] = None
@@ -252,16 +312,17 @@ def run_backtest(
     take_profit_pct_cleaned: Optional[float] = _clean_param(effective_tp)
     trailing_stop_loss_pct_cleaned: Optional[float] = _clean_param(effective_tsl)
 
-    # Iterate through bars
-    for i in range(1, len(data)):
-        timestamp = data.index[i]
-        prev_timestamp = data.index[i - 1]
+    # Iterate through bars (use local_data length)
+    for i in range(1, len(local_data)):
+        timestamp = local_data.index[i]
+        prev_timestamp = local_data.index[i - 1]
 
-        open_price = data["Open"].iloc[i]
-        high_price = data["High"].iloc[i]
-        low_price = data["Low"].iloc[i]
-        close_price = data["Close"].iloc[i]
-        prev_close_price = data["Close"].iloc[i - 1]
+        # Use local_data for prices
+        open_price = local_data["Open"].iloc[i]
+        high_price = local_data["High"].iloc[i]
+        low_price = local_data["Low"].iloc[i]
+        close_price = local_data["Close"].iloc[i]
+        prev_close_price = local_data["Close"].iloc[i - 1]
 
         if pd.isna(equity_curve.iloc[i]):
             equity_curve.iloc[i] = equity_curve.iloc[i - 1]
@@ -298,18 +359,38 @@ def run_backtest(
                 trade_allowed_this_bar = False
                 # logger.debug(f"[{timestamp}] Trade blocked by seasonality filter.")
 
-        # Filter 2: ATR Volatility (Uses effective settings)
+        # Filter 2: ATR Volatility (Uses effective settings and RECALCULATED columns)
         if effective_apply_atr and trade_allowed_this_bar:
-            # ** See warning above regarding pre-calculated ATR column **
-            current_atr = data["atr"].iloc[i]
-            threshold = (
-                data["atr_sma"].iloc[i] * effective_atr_multiplier
-                if effective_atr_sma_period > 0 and "atr_sma" in data
-                else current_atr * effective_atr_multiplier # Fallback if no SMA
-            )
+            # Use the recalculated 'atr_effective' column
+            current_atr = local_data["atr_effective"].iloc[i]
+            threshold = 0.0 # Initialize
+
+            if effective_atr_sma_period > 0:
+                # Use the recalculated 'atr_sma_effective' column for the baseline
+                atr_sma_effective_val = local_data["atr_sma_effective"].iloc[i]
+                if not pd.isna(atr_sma_effective_val):
+                     threshold = atr_sma_effective_val * effective_atr_multiplier
+                else:
+                    # Fallback if SMA is NaN (e.g., during initial window)
+                    # Use current ATR * multiplier as threshold only if current ATR is not NaN
+                     if not pd.isna(current_atr):
+                         threshold = current_atr * effective_atr_multiplier
+                     else:
+                         threshold = np.nan # Keep threshold as NaN if both are NaN
+
+            else:
+                 # If no SMA period, use current ATR * multiplier if current ATR is not NaN
+                 if not pd.isna(current_atr):
+                     threshold = current_atr * effective_atr_multiplier
+                 else:
+                     threshold = np.nan # Keep threshold as NaN if current ATR is NaN
+
+            # Check if trade is allowed
             if pd.isna(current_atr) or pd.isna(threshold):
-                # logger.debug(f"[{timestamp}] ATR or threshold NaN, cannot apply filter.")
-                pass  # Allow trade if ATR is NaN initially?
+                # If ATR or threshold is NaN (e.g., at the start), decide whether to allow trade.
+                # Current behavior: Allow trade (pass). Consider blocking if needed.
+                pass
+                # logger.debug(f"[{timestamp}] ATR or threshold NaN, filter not applied.")
             elif current_atr < threshold:
                 trade_allowed_this_bar = False
                 # logger.debug(f"[{timestamp}] Trade blocked by ATR filter (ATR={current_atr:.4f} < Threshold={threshold:.4f}).")
@@ -493,10 +574,37 @@ def run_backtest(
 
     # --- Final Calculations & Summary ---
     equity_curve.ffill(inplace=True)  # Fill any NaNs from skipped bars
+
+    # Add Rolling Sharpe Calculation
+    SHARPE_ROLLING_WINDOW = 90  # Lookback window in days for rolling Sharpe
+    RISK_FREE_RATE = 0.0
+    ANNUALIZATION_FACTOR = 365  # Assuming daily data
+
+    # Calculate daily returns from equity curve
+    daily_returns = equity_curve.pct_change()
+
+    # Calculate rolling mean of *excess* returns
+    excess_daily_returns = daily_returns - (RISK_FREE_RATE / ANNUALIZATION_FACTOR)
+    rolling_excess_mean = excess_daily_returns.rolling(window=SHARPE_ROLLING_WINDOW).mean()
+
+    # Calculate rolling mean and std dev
+    rolling_std = daily_returns.rolling(window=SHARPE_ROLLING_WINDOW).std()
+
+    # Calculate only where std is positive to avoid division issues
+    rolling_sharpe_non_annualized = pd.Series(np.nan, index=equity_curve.index)
+    valid_mask = rolling_std > 0
+    # Ensure alignment by using .loc with the mask for all series involved
+    rolling_sharpe_non_annualized.loc[valid_mask] = rolling_excess_mean.loc[valid_mask] / rolling_std.loc[valid_mask]
+
+    # Fill NaNs (from window or zero std) with 0 and annualize
+    rolling_sharpe_annualized = (rolling_sharpe_non_annualized * np.sqrt(ANNUALIZATION_FACTOR)).fillna(0.0)
+
     total_pnl = balance - initial_balance
     win_rate = (winning_trades / trade_count * 100) if trade_count > 0 else 0.0
-    daily_returns = equity_curve.pct_change().dropna()
-    sharpe = calculate_sharpe_ratio(daily_returns)
+    # Use the already calculated daily_returns, dropping NaNs for overall calculation
+    daily_returns_dropna = daily_returns.dropna()
+    sharpe = calculate_sharpe_ratio(daily_returns_dropna)
+    # Now pass the original, unmodified equity_curve Series
     max_dd = calculate_max_drawdown(equity_curve)
 
     performance_df = pd.DataFrame(trade_log)
@@ -505,6 +613,12 @@ def run_backtest(
     logger.info(
         f"Backtest complete. Final Balance: {balance:.2f}, Total PnL: {total_pnl:.2f}, Trades: {trade_count}, Win Rate: {win_rate:.2f}%"
     )
+
+    # Create a combined DataFrame for equity and rolling Sharpe
+    equity_curve_df = pd.DataFrame({
+        'equity': equity_curve,
+        'rolling_sharpe': rolling_sharpe_annualized
+    })
 
     return {
         "cumulative_profit": total_pnl,
@@ -515,5 +629,5 @@ def run_backtest(
         "max_drawdown": max_dd,
         "profit_factor": profit_factor,
         "performance_summary": performance_df,
-        "equity_curve": equity_curve,
+        "equity_curve": equity_curve_df,
     }
