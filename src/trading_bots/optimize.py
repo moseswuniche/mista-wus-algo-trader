@@ -13,6 +13,14 @@ from multiprocessing import Pool, cpu_count  # Added for parallel backtesting
 from tqdm import tqdm  # Added for progress bar
 import sys
 import inspect  # Added for inspecting strategy __init__ signatures
+from functools import partial # Added for partial function application
+import json # Added for stable serialization of params
+from logging.handlers import QueueHandler, QueueListener # Added for multiprocessing logging
+import multiprocessing # Added for multiprocessing
+import logging.handlers
+import time
+import traceback # For listener error reporting
+import re # Import re for sanitize_filename if not already imported
 
 # Assuming strategies are accessible via this import path
 from .strategies import (
@@ -26,10 +34,7 @@ from .backtest import run_backtest, calculate_sharpe_ratio, calculate_max_drawdo
 from .technical_indicators import calculate_atr
 from .data_utils import load_csv_data
 
-# Setup logger
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+# Re-add module-level logger instance
 logger = logging.getLogger(__name__)
 
 # Map strategy short names (used in args) to classes
@@ -50,248 +55,345 @@ DEFAULT_OPT_PROCESSES = (
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.append(str(PROJECT_ROOT))
 
+# --- Multiprocessing Logging Setup --- Corrected --- 
 
-def load_param_grid_from_config(
-    config_path: str, symbol: str, strategy_class_name: str
-) -> Dict[str, List[Any]]:
-    """Loads the parameter grid for a specific symbol and strategy from the YAML config."""
-    config_file = Path(config_path).resolve()
-    logger.debug(f"Attempting to load param grid from resolved path: {config_file}")
-    if not config_file.is_file():
-        logger.error(
-            f"Optimization config file not found at resolved path: {config_file}"
-        )
-        raise FileNotFoundError(
-            f"Optimization config file not found at resolved path: {config_file}"
-        )
+# <<< Worker Globals >>>
+worker_log_queue: Optional[multiprocessing.Queue] = None
+worker_data: Optional[pd.DataFrame] = None
+worker_shared_args: Dict[str, Any] = {}
+WORKER_STRATEGY_MAP: Dict[str, type] = {} # Map populated in initializer
+# <<< End Worker Globals >>>
 
+def worker_log_configurer(log_queue: multiprocessing.Queue):
+    """Configures logging for a worker process to send ONLY to the queue."""
+    root = logging.getLogger() 
+    # Ensure root logger exists
+    if not root:
+        print(f"Worker {multiprocessing.current_process().pid}: Root logger not found!", file=sys.stderr)
+        return
+
+    # *** IMPORTANT: Remove existing handlers from worker's root logger ***
+    if root.hasHandlers():
+        print(f"Worker {multiprocessing.current_process().pid}: Removing {len(root.handlers)} existing handler(s) from root logger.", file=sys.stderr)
+        root.handlers.clear()
+
+    # Add ONLY the QueueHandler
+    queue_handler = QueueHandler(log_queue)
+    root.addHandler(queue_handler)
+    # Set the level for this specific handler - messages BELOW this level won't be put on the queue
+    # The overall root level will be set by the main process setup.
+    root.setLevel(logging.DEBUG) # Send DEBUG and higher from workers to the queue
+
+def pool_worker_initializer_with_data(log_q: multiprocessing.Queue, 
+                                      shared_worker_args_for_init: Dict):
+    """Initializer for worker processes.
+       Sets up logging and stores shared data in global variables.
+    """
+    global worker_log_queue, worker_data, worker_shared_args, WORKER_STRATEGY_MAP
+    
+    print(f"Initializing worker {multiprocessing.current_process().pid} with queue {id(log_q)}...", file=sys.stderr) # Basic print for debug
+    
+    # 1. Configure Logging
+    worker_log_queue = log_q
+    worker_log_configurer(worker_log_queue)
+    
+    # 2. Store Shared Data/Args
+    # Make a copy to ensure each worker has its own reference (though DataFrame might still share memory)
+    worker_shared_args = shared_worker_args_for_init.copy()
+    worker_data = worker_shared_args.pop('data', None) # Extract data to separate global
+    if not isinstance(worker_data, pd.DataFrame) or worker_data.empty:
+         print(f"CRITICAL ERROR in worker {multiprocessing.current_process().pid}: Did not receive valid data in initializer! Type: {type(worker_data)}", file=sys.stderr)
+         # Maybe raise an error or log to stderr? Pool might handle worker exit.
+         logger = logging.getLogger("WorkerInitError")
+         logger.error("Worker did not receive data DataFrame during initialization.")
+         # Attempting to log to queue if possible
+         if worker_log_queue:
+             try:
+                 err_record = logger.makeRecord(name="WorkerInitError", level=logging.CRITICAL, 
+                                               fn="", lno=0, msg="Worker data is None", args=[], 
+                                               exc_info=None, func="pool_worker_initializer_with_data")
+                 worker_log_queue.put(err_record)
+             except Exception as e:
+                 print(f"WorkerInitError: Failed to put log record in queue: {e}", file=sys.stderr)
+         # Exiting worker might be necessary if data is crucial
+         # sys.exit(1) # Or let the pool handle it
+
+    # 3. Populate Worker Strategy Map (avoids repeated imports in worker function)
     try:
-        with open(config_file, "r") as f:
-            full_config = cast(Optional[Dict[str, Any]], yaml.safe_load(f))
-            if full_config is None:
-                full_config = {}
-            logger.debug(f"Loaded full config. Keys: {list(full_config.keys())}")
-    except yaml.YAMLError as e:
-        logger.error(f"Error parsing YAML config file {config_path}: {e}")
-        raise ValueError(f"Error parsing YAML config file {config_path}: {e}")
-    except Exception as e:
-        logger.error(f"Error reading config file {config_path}: {e}")
-        raise IOError(f"Error reading config file {config_path}: {e}")
-
-    if not isinstance(full_config, dict):
-        logger.error(f"Invalid YAML format in {config_path}. Expected a dictionary.")
-        raise ValueError(
-            f"Invalid YAML format in {config_path}. Expected a dictionary."
+        from .strategies import (
+            LongShortStrategy, MovingAverageCrossoverStrategy, 
+            RsiMeanReversionStrategy, BollingerBandReversionStrategy
         )
-
-    logger.debug(f"Looking for symbol '{symbol}' in config...")
-    symbol_config = full_config.get(symbol)
-    if not symbol_config or not isinstance(symbol_config, dict):
-        logger.error(
-            f"Symbol '{symbol}' not found or invalid format in config file: {config_path}"
-        )
-        raise ValueError(
-            f"Symbol '{symbol}' not found or invalid format in config file: {config_path}"
-        )
-    logger.debug(f"Found symbol config. Keys: {list(symbol_config.keys())}")
-
-    logger.debug(
-        f"Looking for strategy '{strategy_class_name}' under symbol '{symbol}'..."
-    )
-    strategy_grid = symbol_config.get(strategy_class_name)
-    if not strategy_grid or not isinstance(strategy_grid, dict):
-        logger.error(
-            f"Strategy '{strategy_class_name}' not found or invalid format for symbol '{symbol}' in config: {config_path}"
-        )
-        raise ValueError(
-            f"Strategy '{strategy_class_name}' not found or invalid format for symbol '{symbol}' in config: {config_path}"
-        )
-    logger.debug("Found strategy grid.")
-
-    # Cast the final return value, ensuring it's the expected specific type
-    # This assumes validation confirms the structure fits Dict[str, List[Any]]
-    validated_grid = cast(Dict[str, List[Any]], strategy_grid)
-
-    # Basic validation: ensure values are lists
-    for key, value in validated_grid.items():
-        if not isinstance(value, list):
-            logger.error(
-                f"Invalid format for parameter '{key}' in {symbol}/{strategy_class_name}. Expected a list, got {type(value)}."
-            )
-            raise ValueError(
-                f"Invalid format for parameter '{key}' in {symbol}/{strategy_class_name}. Expected a list, got {type(value)}."
-            )
-        if strategy_class_name == "LongShortStrategy" and key in [
-            "return_thresh_low",
-            "return_thresh_high",
-        ]:
+        WORKER_STRATEGY_MAP = {
+            "LongShort": LongShortStrategy,
+            "MACross": MovingAverageCrossoverStrategy,
+            "RSIReversion": RsiMeanReversionStrategy,
+            "BBReversion": BollingerBandReversionStrategy,
+        }
+    except ImportError as e:
+        print(f"CRITICAL ERROR in worker {multiprocessing.current_process().pid}: Could not import strategies: {e}")
+        # Log/Handle error similar to data error
+        logger = logging.getLogger("WorkerInitError")
+        logger.critical(f"Worker could not import strategies: {e}")
+        if worker_log_queue:
             try:
-                validated_grid[key] = [float(v) for v in value]
-            except ValueError:
-                logger.error(
-                    f"Invalid float value found for {key} in {symbol}/{strategy_class_name}."
-                )
-                raise ValueError(
-                    f"Invalid float value found for {key} in {symbol}/{strategy_class_name}."
-                )
+                 err_record = logger.makeRecord(name="WorkerInitError", level=logging.CRITICAL, 
+                                               fn="", lno=0, msg=f"Strategy import failed: {e}", args=[], 
+                                               exc_info=None, func="pool_worker_initializer_with_data")
+                 worker_log_queue.put(err_record)
+            except Exception as log_e:
+                print(f"WorkerInitError: Failed to put log record in queue: {log_e}", file=sys.stderr)
+        # sys.exit(1) 
 
-    logger.info(
-        f"Loaded parameter grid for {symbol} / {strategy_class_name} from {config_path}"
-    )
-    return validated_grid
+    print(f"Worker {multiprocessing.current_process().pid} initialized successfully. Data shape: {worker_data.shape if worker_data is not None else 'None'}", file=sys.stderr)
 
 
-def generate_param_combinations(
-    param_grid: Dict[str, List[Any]], strategy_class_name: str
-) -> Iterator[Dict[str, Any]]:
-    """Generates parameter combinations for grid search from a loaded grid."""
-    param_names = list(param_grid.keys())
-    value_lists = list(param_grid.values())
+# <<< START MOVED HELPER FUNCTIONS >>>
 
-    for combo_values in itertools.product(*value_lists):
-        params = dict(zip(param_names, combo_values))
+# --- Parameter Loading & Processing --- 
+# --- (Moved Here - BEFORE optimize_strategy) ---
 
-        # --- Apply Strategy-Specific Constraints & Adjustments ---
-        if strategy_class_name == "MovingAverageCrossoverStrategy":
-            if params["fast_period"] >= params["slow_period"]:
-                continue  # Skip invalid combination
-        elif strategy_class_name == "RsiMeanReversionStrategy":
-            if params["oversold_threshold"] >= params["overbought_threshold"]:
-                continue  # Skip invalid combination
-            # Ensure atr_threshold_multiplier is None if intended
-            if params.get("atr_threshold_multiplier") == "None":
-                params["atr_threshold_multiplier"] = None
-        elif strategy_class_name == "LongShortStrategy":
-            # Pop volume threshold components
-            # Assuming volume_z_thresh_low/high are the keys from the YAML
-            vt_low = params.pop("volume_z_thresh_low")
-            vt_high = params.pop("volume_z_thresh_high")
+# <<< Helper function to create stable hashable tuple representation of params >>>
+def params_to_tuple_rep(params: Dict[str, Any], precision: int = 8) -> tuple:
+    """Creates a stable, hashable tuple representation of a parameter dictionary,
+       normalizing numeric types, sorting keys, and handling complex types.
+    Args:
+        params: The parameter dictionary.
+        precision: The number of decimal places to round floats to.
+    Returns:
+        A hashable tuple representation.
+    """
+    items = []
+    logger = logging.getLogger(__name__) # Use logger defined in the module
+    for k, v in sorted(params.items()):
+        # Handle floats specifically for rounding
+        if isinstance(v, float):
+            try:
+                rounded_v = round(v, precision)
+                if rounded_v == -0.0:
+                    rounded_v = 0.0
+                items.append((k, rounded_v))
+            except (ValueError, TypeError) as e:
+                 logger.warning(f"Could not round float parameter '{k}' value {repr(v)}: {e}. Using original value.")
+                 items.append((k, v))
+        # Keep ints as ints
+        elif isinstance(v, int):
+             items.append((k, v))
+        elif isinstance(v, tuple):
+            # Round float elements within tuples
+            try:
+                rounded_tuple_elements = []
+                for elem in v:
+                    if isinstance(elem, float):
+                        rounded_elem = round(elem, precision)
+                        if rounded_elem == -0.0:
+                           rounded_elem = 0.0
+                        rounded_tuple_elements.append(rounded_elem)
+                    else:
+                        rounded_tuple_elements.append(elem) # Keep non-floats as is
+                items.append((k, tuple(rounded_tuple_elements)))
+            except (ValueError, TypeError) as e:
+                 logger.warning(f"Could not round float elements in tuple parameter '{k}' value {repr(v)}: {e}. Using original value.")
+                 items.append((k, v)) # Use original tuple on error
+        elif isinstance(v, list):
+             # Convert lists to tuples for hashability, round floats within
+             try:
+                 rounded_list_elements = []
+                 for elem in v:
+                     if isinstance(elem, float):
+                          rounded_elem = round(elem, precision)
+                          if rounded_elem == -0.0:
+                             rounded_elem = 0.0
+                          rounded_list_elements.append(rounded_elem)
+                     else:
+                          rounded_list_elements.append(elem)
+                 items.append((k, tuple(sorted(rounded_list_elements, key=lambda x: (isinstance(x, type(None)), x) if isinstance(x, (int, float, str, bool, type(None))) else (2, type(x).__name__))))) # Sort list elements for stability
+             except (ValueError, TypeError) as e:
+                 logger.warning(f"Could not process list parameter '{k}' value {repr(v)}: {e}. Converting to tuple directly.")
+                 items.append((k, tuple(v))) # Basic tuple conversion on error
+        else:
+            # For other hashable types (bool, str, None), append directly
+            items.append((k, v))
+            
+    return tuple(items)
 
-            # Add the expected volume_thresh tuple for the constructor
-            params["volume_thresh"] = (vt_low, vt_high)
 
-            # Remove the old fixed return threshold keys if they somehow persist
-            params.pop("return_thresh_low", None)
-            params.pop("return_thresh_high", None)
-
-            # Ensure the new Z-score parameters are present (they should be loaded from YAML)
-            # No need to pop/add them here, they should be passed directly
-            # if 'return_z_score_period' not in params or 'return_z_score_threshold' not in params:
-            #     logger.warning(f"Missing Z-score params for LongShortStrategy combo: {params}")
-            #     continue # Or handle as error
-
-            # Convert string 'None' to Python None for trend_filter_period if present
-            if params.get("trend_filter_period") == "None":
-                params["trend_filter_period"] = None
-
-        yield params
-
-
-# <<< Helper Function for Filename Sanitization >>>
-def sanitize_filename(filename: str) -> str:
+def sanitize_filename(filename: str, replacement: str = "_") -> str:
     """Removes or replaces characters invalid for filenames."""
-    valid_chars = "-_.() %s%s" % (string.ascii_letters, string.digits)
-    sanitized = "".join(c if c in valid_chars else "_" for c in filename)
+    # Allow alphanumeric, underscore, hyphen, period
+    valid_chars = set(string.ascii_letters + string.digits + "_-.")
+    # Replace invalid characters with the replacement character
+    sanitized = "".join(c if c in valid_chars else replacement for c in filename)
+    # Replace spaces with underscores
+    sanitized = sanitized.replace(" ", "_")
+    # Remove consecutive replacements (e.g., ___)
+    sanitized = re.sub(f"{re.escape(replacement)}+", replacement, sanitized)
+    # Remove leading/trailing replacements
+    sanitized = sanitized.strip(replacement)
+    # Limit length (optional, but good practice)
+    max_len = 200
+    if len(sanitized) > max_len:
+        sanitized = sanitized[:max_len]
     return sanitized
 
-
-# <<< Helper Function to Create Parameter String for Filename >>>
-def create_param_string(params: Dict[str, Any]) -> str:
-    """Creates a sorted, filename-safe string from parameter dictionary."""
-    items = []
-    for key, value in sorted(params.items()):  # Sort for consistency
-        # Format value (handle None, floats, tuples)
-        if value is None:
-            value_str = "None"
-        elif isinstance(value, float):
-            value_str = f"{value:.4g}".replace(
-                ".", "p"
-            )  # Use general format, replace dot
-        elif isinstance(value, tuple):
-            # Format tuple elements individually
-            value_str = "_".join(
-                f"{v:.4g}".replace(".", "p") if isinstance(v, float) else str(v)
-                for v in value
-            )
-        else:
-            value_str = str(value)
-        items.append(f"{key}_{value_str}")
-    return sanitize_filename("_".join(items))
+# <<< END MOVED HELPER FUNCTIONS >>>
 
 
-# --- Worker function for parallel backtesting ---
-def run_backtest_for_params(args_dict: Dict) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Worker function for parallel backtesting."""
-    params = args_dict["params"]
-    strategy_class = args_dict["strategy_class"]
-    symbol = args_dict["symbol"]
-    data = args_dict["data"]
-    trade_units = args_dict["trade_units"]
-    commission_bps = args_dict["commission_bps"]
-    initial_balance = args_dict["initial_balance"]
-    # TODO: Add filter params (apply_atr_filter, etc.) to args_dict if controlled globally
-    apply_atr_filter = args_dict.get("apply_atr_filter", False)  # Example default
-    allowed_trading_hours_utc = args_dict.get(
-        "allowed_trading_hours_utc"
-    )  # Example default
-    apply_seasonality_to_symbols = args_dict.get(
-        "apply_seasonality_to_symbols"
-    )  # Example default
+# --- Worker function for parallel backtesting --- 
+# *** Modified signature: accepts ONLY params dict ***
+# *** Uses global variables set by initializer ***
+def run_backtest_for_params(params: Dict[str, Any]
+                            ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    global worker_data, worker_shared_args, WORKER_STRATEGY_MAP # Access globals
+    logger = logging.getLogger(__name__) # Get logger configured by initializer
+    
+    # +++ ADD DEBUG LOGGING FOR PARAMS ID +++
+    logger.debug(f"Worker {multiprocessing.current_process().pid} ENTRY - Params object ID: {id(params)}")
+    # +++ END DEBUG LOGGING +++
+    
+    # Check if globals were initialized correctly
+    if worker_data is None or not worker_shared_args or not WORKER_STRATEGY_MAP:
+        logger.error(f"Worker {multiprocessing.current_process().pid} found uninitialized globals! Skipping task.")
+        return None, None
 
-    # --- Get optional SL/TP values from params, default to None ---
-    stop_loss_pct = params.get("stop_loss_pct")
-    take_profit_pct = params.get("take_profit_pct")
-    trailing_stop_loss_pct = params.get("trailing_stop_loss_pct")
-    # --- Remove SL/TP/TSL from strategy params before instantiation ---
-    strategy_params_from_grid = {
-        k: v
-        for k, v in params.items()
-        if k not in ["stop_loss_pct", "take_profit_pct", "trailing_stop_loss_pct"]
+    # Extract necessary info from shared_args (now global)
+    symbol = worker_shared_args["symbol"]
+    trade_units = worker_shared_args["units"]
+    optimize_metric = worker_shared_args["optimize_metric"]
+    commission_bps = worker_shared_args["commission_bps"]
+    data_start_trim = worker_shared_args["data_start_trim"]
+    data_end_trim = worker_shared_args["data_end_trim"]
+    apply_atr_filter = worker_shared_args["apply_atr_filter"]
+    atr_filter_period = worker_shared_args["atr_filter_period"]
+    atr_filter_multiplier = worker_shared_args["atr_filter_multiplier"]
+    atr_filter_sma_period = worker_shared_args["atr_filter_sma_period"]
+    apply_seasonality_filter = worker_shared_args["apply_seasonality_filter"]
+    allowed_trading_hours_utc = worker_shared_args["allowed_trading_hours_utc"]
+    strategy_short_name = worker_shared_args["strategy_short_name"]
+
+
+    # Log the start of the backtest *using the passed params*
+    logger.info(f"Running backtest for: {strategy_short_name} on {symbol}")
+    # *** UNCOMMENT the complex INFO log for params content for now ***
+    logger.info(f"Params: {params}, SL: {params.get('stop_loss')}, TP: {params.get('take_profit')}, TSL: {params.get('trailing_stop_loss')}, Comm: {commission_bps} bps")
+    logger.info(f"ATR Filter: {apply_atr_filter} (P={atr_filter_period}, M={atr_filter_multiplier}, SMA={atr_filter_sma_period})")
+    logger.info(f"Seasonality Filter: {apply_seasonality_filter} (Hrs={allowed_trading_hours_utc}, Syms=)") # Assuming syms is not needed per-worker
+
+    strategy_class = WORKER_STRATEGY_MAP.get(strategy_short_name)
+    if not strategy_class:
+        logger.error(f"Strategy short name '{strategy_short_name}' not found in worker's STRATEGY_MAP.")
+        return None, None
+
+    # --- Prepare strategy arguments ---
+    # Get the __init__ signature
+    sig = inspect.signature(strategy_class.__init__)
+    valid_init_params = {p for p in sig.parameters if p != 'self'}
+
+    # Combine shared args and specific params, filtering for valid __init__ args
+    # Make a copy to avoid modifying the passed 'params' dict
+    current_run_params = params.copy()
+
+    # Filter params based on the strategy's __init__ signature
+    strategy_init_args = {
+        k: v for k, v in current_run_params.items()
+        if k in valid_init_params
     }
 
-    # Ensure trend_filter_period is None, not the string "None"
-    if strategy_params_from_grid.get("trend_filter_period") == "None":
-        strategy_params_from_grid["trend_filter_period"] = None
+    # <<< START TYPE CORRECTION >>>
+    # Correct types for specific strategy parameters before instantiation
+    strategy_class_name = strategy_class.__name__ # Get name for checks
+    if strategy_class_name == "LongShortStrategy":
+         # Ensure period is int
+         if 'trend_filter_period' in strategy_init_args and strategy_init_args['trend_filter_period'] is not None:
+              try:
+                   original_value = strategy_init_args['trend_filter_period']
+                   strategy_init_args['trend_filter_period'] = int(original_value)
+              except (ValueError, TypeError) as e:
+                   logger.warning(f"Could not convert trend_filter_period '{original_value}' to int for {strategy_class_name}: {e}. Setting to None.")
+                   strategy_init_args['trend_filter_period'] = None # Or raise error
+         # Ensure use_ema is bool
+         if 'trend_filter_use_ema' in strategy_init_args and strategy_init_args['trend_filter_use_ema'] is not None:
+              try:
+                   original_value = strategy_init_args['trend_filter_use_ema']
+                   if isinstance(original_value, str):
+                        strategy_init_args['trend_filter_use_ema'] = original_value.lower() in ['true', '1', 't', 'y', 'yes']
+                   else:
+                        strategy_init_args['trend_filter_use_ema'] = bool(original_value)
+              except Exception as e:
+                   logger.warning(f"Could not convert trend_filter_use_ema '{original_value}' to bool for {strategy_class_name}: {e}. Setting to False.")
+                   strategy_init_args['trend_filter_use_ema'] = False # Default
+    # Add similar blocks for other strategies and their specific type needs
 
+    # <<< END TYPE CORRECTION >>>
+
+
+    # Create strategy instance
     try:
-        # --- Filter params to only those accepted by the strategy's __init__ ---
-        init_signature = inspect.signature(strategy_class.__init__)
-        valid_init_params = init_signature.parameters.keys()
-        # Exclude 'self' if present (though **kwargs usually handles it)
-        valid_init_params = {p for p in valid_init_params if p != 'self'}
-
-        strategy_init_args = {
-            k: v
-            for k, v in strategy_params_from_grid.items()
-            if k in valid_init_params
-        }
-
-        # Instantiate the strategy with the filtered parameter combination
         strategy_instance = strategy_class(**strategy_init_args)
-
-        # Log start including symbol
-        logger.info(f"Running backtest for: {strategy_class.__name__} on {symbol}")
-
-        # Run the backtest with correct args
-        result_dict = run_backtest(
-            strategy=strategy_instance,
-            symbol=args_dict["symbol"],
-            data=data,
-            units=trade_units,  # Corrected arg name: units
-            commission_bps=commission_bps,
-            initial_balance=initial_balance,
-            stop_loss_pct=stop_loss_pct,  # Pass extracted SL
-            take_profit_pct=take_profit_pct,  # Pass extracted TP
-            trailing_stop_loss_pct=trailing_stop_loss_pct,  # Pass extracted TSL
-            # log_trades=False, # Removed invalid arg
-        )
-        return params, result_dict  # Return full params and results
     except Exception as e:
-        logger.error(
-            f"Exception during backtest for params {params}: {e}", exc_info=True
+        logger.error(f"Error instantiating {strategy_class.__name__} with args {strategy_init_args}: {e}", exc_info=True)
+        return None, None # Return None if strategy fails to initialize
+
+
+    # --- Prepare parameters for run_backtest, extracting from params dict ---
+    # Use .get() to safely access potential keys, falling back to None
+    sl_val = params.get("stop_loss_pct")
+    tp_val = params.get("take_profit_pct")
+    tsl_val = params.get("trailing_stop_loss_pct")
+    apply_atr_grid = params.get("apply_atr_filter") # Name needs to match YAML grid key
+    atr_period_grid = params.get("atr_filter_period")
+    # Use the key from the YAML file ('atr_filter_threshold')
+    atr_multiplier_grid = params.get("atr_filter_threshold") 
+    atr_sma_grid = params.get("atr_filter_sma_period")
+    apply_seasonality_grid = params.get("apply_seasonality") # Name needs to match YAML grid key
+    # Construct trading hours string from start/end hours in grid
+    start_hour = params.get("seasonality_start_hour")
+    end_hour = params.get("seasonality_end_hour")
+    trading_hours_grid = f"{start_hour}-{end_hour}" if start_hour is not None and end_hour is not None else None
+    
+    seasonality_symbols_grid = params.get("apply_seasonality_to_symbols") # Name needs to match YAML grid key
+
+
+    # Run the backtest
+    try:
+        result_metrics = run_backtest(
+            data=worker_data.copy(), # Pass a copy to avoid potential mutation issues?
+            strategy=strategy_instance,
+            symbol=symbol,
+            # Pass global defaults from shared args
+            initial_balance=worker_shared_args.get("initial_balance", 10000.0),
+            commission_bps=commission_bps,
+            units=trade_units,
+            apply_atr_filter=apply_atr_filter, # Global default
+            atr_filter_period=atr_filter_period, # Global default
+            atr_filter_multiplier=atr_filter_multiplier, # Global default
+            atr_filter_sma_period=atr_filter_sma_period, # Global default
+            apply_seasonality_filter=apply_seasonality_filter, # Global default
+            allowed_trading_hours_utc=allowed_trading_hours_utc, # Global default
+            apply_seasonality_to_symbols=worker_shared_args.get("apply_seasonality_to_symbols"), # Global default
+            # Pass grid-specific values (will be None if not in params dict)
+            sl_from_grid=sl_val,
+            tp_from_grid=tp_val,
+            tsl_from_grid=tsl_val,
+            apply_atr_from_grid=apply_atr_grid,
+            atr_period_from_grid=atr_period_grid,
+            atr_multiplier_from_grid=atr_multiplier_grid,
+            atr_sma_from_grid=atr_sma_grid,
+            apply_seasonality_from_grid=apply_seasonality_grid,
+            trading_hours_from_grid=trading_hours_grid,
+            seasonality_symbols_from_grid=seasonality_symbols_grid,
         )
-        # Return empty result on failure to avoid breaking the process
-        return params, {}
+        # NOTE: run_backtest itself logs completion details.
+        # Worker only needs to log if the function *call* fails or returns None.
+        if not result_metrics:
+             logger.warning(f"Worker {multiprocessing.current_process().pid}: run_backtest function returned None or empty metrics for params: {params}")
+
+        # Return the original params (passed into function) and the results
+        return params, result_metrics
+
+    except Exception as e:
+        logger.error(f"Exception during backtest run for params {params}: {e}", exc_info=True)
+        return params, None # Return params even on failure, but None for results
 
 
 def optimize_strategy(
@@ -299,196 +401,346 @@ def optimize_strategy(
     config_path: str,
     shared_worker_args: Dict,
     optimization_metric: str = "cumulative_profit",
-    num_processes: int = DEFAULT_OPT_PROCESSES,  # Added processes arg
+    num_processes: int = DEFAULT_OPT_PROCESSES,
+    log_queue: Optional[multiprocessing.Queue] = None # Argument needed
 ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], List[Dict[str, Any]]]:
     """
-    Performs grid search optimization for a given strategy using parallel backtesting.
-
-    Args:
-        strategy_short_name: The short name of the strategy to optimize (e.g., "MACross").
-        config_path: Path to the YAML configuration file.
-        shared_worker_args: Dictionary containing shared arguments for backtesting.
-        optimization_metric: The key in the backtest result to maximize.
-        num_processes: Number of parallel processes to use for backtesting.
-
-    Returns:
-        A tuple containing: (best_params, best_result_dict, all_results_list) or (None, None, []) if error.
+    Optimizes a single strategy for a given symbol using grid search with multiprocessing,
+    avoiding redundant backtests for duplicate parameter sets.
     """
-    if strategy_short_name not in STRATEGY_MAP:
-        logger.error(
-            f"Unknown strategy name: {strategy_short_name}. Available: {list(STRATEGY_MAP.keys())}"
-        )
-        raise ValueError(
-            f"Unknown strategy name: {strategy_short_name}. Available: {list(STRATEGY_MAP.keys())}"
-        )
+    # Get logger for this function (configured by main process)
+    logger = logging.getLogger(__name__)
+    symbol = shared_worker_args["symbol"]
+    logger.info(
+        f"Starting optimization for Strategy: {strategy_short_name}, Symbol: {symbol}"
+    )
+    strategy_class = STRATEGY_MAP.get(strategy_short_name)
+    if not strategy_class:
+        logger.error(f"Strategy name '{strategy_short_name}' not found in STRATEGY_MAP.")
+        return None, None, []
 
-    strategy_class = STRATEGY_MAP[strategy_short_name]
     strategy_class_name = strategy_class.__name__
 
     try:
-        # Load the specific grid for this symbol and strategy
-        param_grid = load_param_grid_from_config(
-            config_path, shared_worker_args["symbol"], strategy_class_name
+        # --- Load and Process Parameter Grid --- 
+        config_file = Path(config_path)
+        logger.info(f"Loading param grid from: {config_file}")
+        if not config_file.is_file():
+            raise FileNotFoundError(f"Parameter config file not found: {config_path}")
+
+        try:
+            with open(config_file, "r") as f:
+                full_config = yaml.safe_load(f)
+        except yaml.YAMLError as e:
+            raise ValueError(f"Error parsing YAML file {config_path}: {e}")
+        except Exception as e:
+            raise ValueError(f"Error reading config file {config_path}: {e}")
+
+        if not isinstance(full_config, dict) or symbol not in full_config:
+            raise ValueError(f"Symbol '{symbol}' not found in config file: {config_path}")
+
+        symbol_config = full_config[symbol]
+        if not isinstance(symbol_config, dict) or strategy_class_name not in symbol_config:
+            raise ValueError(
+                f"Strategy '{strategy_class_name}' not found for symbol '{symbol}' in {config_path}"
+            )
+
+        loaded_grid = symbol_config[strategy_class_name]
+        if not isinstance(loaded_grid, dict):
+            raise ValueError(
+                f"Parameter grid for {symbol}/{strategy_class_name} is not a dictionary."
+            )
+
+        # Process individual parameter lists (normalize 'None', dedupe values within list, sort)
+        param_grid: Dict[str, List[Any]] = {}
+        for key, value in loaded_grid.items():
+            if not isinstance(value, list):
+                logger.error(
+                    f"Invalid format for parameter '{key}' in {symbol}/{strategy_class_name}. Expected a list, got {type(value)}."
+                )
+                raise ValueError(
+                    f"Invalid format for parameter '{key}' in {symbol}/{strategy_class_name}. Expected a list, got {type(value)}."
+                )
+
+            processed_values_dict = {}
+            for item in value:
+                processed_item = item
+                key_for_dedupe = item
+                if isinstance(item, str) and item.lower() == 'none':
+                    processed_item = None
+                    key_for_dedupe = None
+                elif isinstance(item, (int, float)):
+                    key_for_dedupe = float(item)
+
+                if key_for_dedupe not in processed_values_dict:
+                    processed_values_dict[key_for_dedupe] = processed_item
+
+            unique_values_list = list(processed_values_dict.values())
+
+            try:
+                def sort_key(x):
+                    if x is None: return (0, None)
+                    if isinstance(x, bool): return (1, x)
+                    if isinstance(x, (int, float)): return (2, x)
+                    if isinstance(x, str): return (3, x)
+                    return (4, str(x))
+                sorted_unique_values = sorted(unique_values_list, key=sort_key)
+                param_grid[key] = sorted_unique_values
+                logger.debug(f"Processed param '{key}': Original={value}, UniqueSorted={sorted_unique_values}")
+            except TypeError as e:
+                logger.warning(
+                    f"Sorting failed for parameter '{key}' values ({unique_values_list}): {e}. Using original order of unique items."
+                )
+                param_grid[key] = unique_values_list
+        # --- End Load and Process Parameter Grid ---
+
+    except (FileNotFoundError, ValueError) as e:
+        logger.error(
+            f"Failed to load param grid for {strategy_class_name} on {symbol}: {e}"
         )
-    except (FileNotFoundError, ValueError, IOError) as e:
-        logger.error(f"Stopping optimization due to error loading parameter grid: {e}")
         return None, None, []
 
-    # --- Generate all parameter combinations ---
-    param_combinations = list(
-        generate_param_combinations(param_grid, strategy_class_name)
-    )
-    total_combinations = len(param_combinations)
+    # --- Calculate Total Possible Combinations (Before Deduplication) ---
+    param_names = list(param_grid.keys())
+    param_value_lists = list(param_grid.values())
+    total_possible_combinations = 1
+    if param_value_lists:
+         try:
+             for value_list in param_value_lists:
+                 total_possible_combinations *= len(value_list)
+         except Exception as e:
+             logger.error(f"Error calculating total combinations: {e}", exc_info=True)
+             total_possible_combinations = 0 # Indicate calculation error
+    else:
+        total_possible_combinations = 0
+    logger.info(f"Total possible parameter combinations (before deduplication): {total_possible_combinations}")
 
-    if total_combinations == 0:
+    if total_possible_combinations == 0:
+        logger.warning(f"No valid parameter combinations generated for {strategy_class_name} on {symbol}. Skipping.")
+        return None, None, []
+
+    # --- Generate Unique Parameter Combinations and Deduplicate On-the-Fly --- 
+    unique_rep_to_params_map = {} # Stores rep -> params_dict for unique combinations
+    combination_iterator = itertools.product(*param_value_lists)
+    generated_count = 0
+
+    logger.info("Generating and deduplicating parameter combinations...")
+    # Iterate through all possible combinations
+    for i, combination_values in enumerate(combination_iterator):
+        generated_count += 1
+        # Construct the dictionary for this specific combination
+        params = dict(zip(param_names, combination_values))
+
+        # Special handling for LongShortStrategy tuple params (if needed)
+        if strategy_class_name == "LongShortStrategy":
+            rt_low = params.pop("return_thresh_low", None)
+            rt_high = params.pop("return_thresh_high", None)
+            vt_low = params.pop("volume_thresh_low", None)
+            vt_high = params.pop("volume_thresh_high", None)
+            if rt_low is not None and rt_high is not None:
+                params["return_thresh"] = (rt_low, rt_high)
+            if vt_low is not None and vt_high is not None:
+                params["volume_thresh"] = (vt_low, vt_high)
+
+        # Create the hashable representation for deduplication
+        rep = params_to_tuple_rep(params, precision=8) # Use desired precision
+
+        # --- DEBUG LOGGING --- 
+        # Log the params dict and its representation periodically
+        log_interval = max(1, total_possible_combinations // 100) # Log ~100 times
+        if i < 20 or i % log_interval == 0:
+             logger.debug(f"Dedupe Check [{i}]: Params={repr(params)}, Rep={rep}")
+        # --- END DEBUG LOGGING ---
+
+        # Store the rep and params dict if the rep hasn't been seen
+        # setdefault returns the existing value if key exists, otherwise sets the value and returns it
+        existing = unique_rep_to_params_map.setdefault(rep, params)
+
+        # Optional: Log when a duplicate is found (can be very verbose)
+        # if existing is not params: # Check if setdefault added a new item or found existing
+        #     logger.debug(f"Duplicate rep encountered: {rep}")
+
+    # --- End Deduplication ---
+
+    # Extract the unique parameter dictionaries from the map
+    unique_params_for_backtest = list(unique_rep_to_params_map.values())
+    unique_combinations_count = len(unique_params_for_backtest)
+    duplicate_count = generated_count - unique_combinations_count
+
+    logger.info(f"Generated {generated_count} total combinations.")
+    logger.info(f"Deduplication complete: {unique_combinations_count} unique combinations identified for backtesting.")
+    if duplicate_count > 0:
+         logger.info(f"  ({duplicate_count} duplicate combinations ignored)")
+
+    # DEBUG: Log a sample of the unique list before submitting jobs
+    if unique_params_for_backtest:
+         logger.debug(f"Sample of unique_params_for_backtest[0]: {unique_params_for_backtest[0]}")
+         if len(unique_params_for_backtest) > 1:
+              logger.debug(f"Sample of unique_params_for_backtest[1]: {unique_params_for_backtest[1]}")
+
+    if unique_combinations_count == 0 and total_possible_combinations > 0:
+        logger.error("Error: All combinations were considered duplicates. Check params_to_tuple_rep or generation logic.")
+        return None, None, [] # Avoid proceeding with no jobs
+
+    # Determine number of processes to use
+    available_cpus = cpu_count()
+    if num_processes > available_cpus:
         logger.warning(
-            f"No valid parameter combinations generated for {strategy_class_name} on {shared_worker_args['symbol']}. Check constraints."
+            f"Requested processes ({num_processes}) exceed available CPUs ({available_cpus}). Using {available_cpus}."
         )
-        return None, None, []
+        num_processes = available_cpus
+    elif num_processes <= 0:
+        num_processes = available_cpus
+        logger.info(f"Using default number of processes: {num_processes}")
+    else:
+        logger.info(f"Using specified number of processes: {num_processes}")
 
-    logger.info(
-        f"Generated {total_combinations} parameter combinations for {strategy_class_name} on {shared_worker_args['symbol']}."
-    )
-    logger.info(f"Starting parallel backtesting with {num_processes} processes...")
 
-    # --- Prepare arguments for the worker function ---
-    worker_args_list = [
-        {
-            "params": params,
-            "symbol": shared_worker_args["symbol"],
-            "strategy_class": strategy_class,
-            "data": shared_worker_args["data"],
-            "trade_units": shared_worker_args["trade_units"],
-            "commission_bps": shared_worker_args["commission_bps"],
-            "initial_balance": shared_worker_args["initial_balance"],
-            "apply_atr_filter": shared_worker_args["apply_atr_filter"],
-            "atr_filter_period": shared_worker_args["atr_filter_period"],
-            "atr_filter_multiplier": shared_worker_args["atr_filter_multiplier"],
-            "atr_filter_sma_period": shared_worker_args["atr_filter_sma_period"],
-            "apply_seasonality_filter": shared_worker_args["apply_seasonality_filter"],
-            "allowed_trading_hours_utc": shared_worker_args[
-                "allowed_trading_hours_utc"
-            ],
-            "apply_seasonality_to_symbols": shared_worker_args[
-                "apply_seasonality_to_symbols"
-            ],
-        }
-        for params in param_combinations
-    ]
+    # --- Prepare arguments ONLY for unique backtests --- 
+    # worker_args_list = [] # NO LONGER NEEDED
+    # # Iterate through the *truly unique* parameter dictionaries
+    # for params in unique_params_for_backtest:
+    #     current_args = shared_worker_args.copy()
+    #     current_args["params"] = params
+    #     current_args["strategy_short_name"] = strategy_short_name
+    #     worker_args_list.append(current_args)
 
-    # --- Run backtests in parallel ---
-    all_results_list = []
-    best_result_so_far: Optional[Dict[str, Any]] = None
-    best_params_so_far: Optional[Dict[str, Any]] = None
-    completed_count = 0
+    # +++ PRE-POOL DEBUG LOGGING +++
+    # logger.info(f"Prepared {len(worker_args_list)} unique arguments for the pool.")
+    # if len(worker_args_list) > 0:
+    #     logger.debug(f"  ID of first arg dict: {id(worker_args_list[0])}")
+    #     if len(worker_args_list) > 1:
+    #         logger.debug(f"  ID of second arg dict: {id(worker_args_list[1])}")
+    #         logger.debug(f"  First arg content: {worker_args_list[0]}")
+    #         logger.debug(f"  Second arg content: {worker_args_list[1]}")
+    # +++ END PRE-POOL DEBUG LOGGING +++
+
+    # --- Run Backtests for Unique Combinations in Parallel ---
+    unique_results_list = []
+    logger.info(f"Starting parallel backtesting for {unique_combinations_count} unique combinations using {num_processes} processes...")
+    
+    # --- Define arguments for the initializer --- 
+    # We need to pass the parts of shared_worker_args that DON'T include the large data
+    # (Data will be loaded by initializer if we choose that route, or passed if small enough)
+    # For now, let's pass everything needed besides data.
+    init_args_for_worker = shared_worker_args.copy()
+    init_args_for_worker['strategy_short_name'] = strategy_short_name # Add strategy name
+    # Add any other small, constant args workers need
+    # Ensure data is NOT in here if it's large and loaded by initializer
+    # If data IS passed here, the initializer needs to handle it
+
+    # *** Pass initializer correctly ***
+    pool_initializer_func = None
+    initializer_args = None
+    if log_queue:
+         # The initializer needs the queue AND the shared args (without data)
+         pool_initializer_func = pool_worker_initializer_with_data
+         initializer_args = (log_queue, init_args_for_worker)
 
     try:
-        with Pool(processes=num_processes) as pool:
-            # Using imap_unordered to get results as they complete (potentially better memory)
-            # Each item in the iterator will be the tuple (params, result_dict)
-            for params, result_dict in pool.imap_unordered(
-                run_backtest_for_params, worker_args_list
-            ):
-                completed_count += 1
-                if (
-                    completed_count % PROGRESS_LOG_INTERVAL == 0
-                    or completed_count == total_combinations
-                ):
-                    logger.info(
-                        f"Processed {completed_count}/{total_combinations} combinations for {shared_worker_args['symbol']}..."
-                    )
+        # Pass the initializer and its args to the Pool
+        with Pool(processes=num_processes, 
+                  initializer=pool_initializer_func, 
+                  initargs=initializer_args) as pool:
+            
+            # *** Replace imap_unordered with map ***
+            # logger.info("Submitting tasks to pool using imap_unordered (without tqdm)...")
+            # imap_results = pool.imap_unordered(run_backtest_for_params, unique_params_for_backtest)
+            # unique_results_list = list(imap_results) # Collect results directly
+            
+            logger.info("Submitting tasks to pool using map...")
+            # pool.map takes the function and the iterable directly
+            unique_results_list = pool.map(run_backtest_for_params, unique_params_for_backtest)
+            logger.info(f"Collected {len(unique_results_list)} results from pool using map.")
+            
+            # Note: pool.map blocks until all tasks complete, so close/join is slightly redundant here
+            # but doesn't hurt.
+        logger.info("Parallel backtesting finished.")
+    except Exception as e:
+        logger.exception(f"Error during parallel backtesting: {e}", exc_info=True)
+        return None, None, []
 
-                if not result_dict:  # Skip if backtest failed (returned empty dict)
-                    continue
+    # --- Process Unique Results and Find Best ---
+    all_results_details = [] # Store details for each unique run
+    best_params: Optional[Dict[str, Any]] = None
+    minimize_metric = optimization_metric in ["max_drawdown"] # Add other minimizing metrics if needed
+    best_metric_value: Optional[float] = float('inf') if minimize_metric else -float('inf')
+    best_metrics_dict: Optional[Dict[str, Any]] = None # Store the full metrics dict for the best result
 
-                # --- Track Best Result ---
-                current_metric_value = result_dict.get(optimization_metric)
+    processed_unique_count = 0
+    successful_unique_count = 0
 
-                if current_metric_value is None:
-                    logger.warning(
-                        f"Optimization metric '{optimization_metric}' not found in results for params: {params}. Skipping."
-                    )
-                    continue
+    logger.info(f"Processing {len(unique_results_list)} unique results returned by workers...")
 
-                # Handle metrics where higher is better vs lower is better (e.g., max_drawdown)
+    # Iterate directly over the list of unique results from the pool
+    for result_params, result_metrics in unique_results_list:
+        processed_unique_count += 1
+
+        if result_params is not None and result_metrics is not None:
+            successful_unique_count += 1
+            # Combine params and results into a single dictionary for saving details of this unique run
+            detail_entry = {f"param_{k}": v for k,v in result_params.items()}
+            detail_entry.update({f"result_{k}": v for k,v in result_metrics.items()})
+            all_results_details.append(detail_entry)
+
+            # --- Update Best Result (Processing each unique result once) ---
+            current_metric_value = result_metrics.get(optimization_metric)
+            if current_metric_value is not None:
+                is_initial_best = best_metric_value == float('inf') or best_metric_value == -float('inf')
                 is_better = False
-                if best_result_so_far is None:
-                    is_better = True
+                if pd.notna(current_metric_value):
+                    if is_initial_best:
+                        is_better = True
+                    elif minimize_metric and current_metric_value < best_metric_value:
+                        is_better = True
+                    elif not minimize_metric and current_metric_value > best_metric_value:
+                        is_better = True
                 else:
-                    best_metric_value = best_result_so_far.get(optimization_metric)
-                    if (
-                        best_metric_value is None
-                    ):  # Should not happen if first result was valid
-                        is_better = True
-                    elif (
-                        optimization_metric == "max_drawdown"
-                    ):  # Lower is better for drawdown
-                        # Ensure both are treated as positive for comparison
-                        if abs(current_metric_value) < abs(best_metric_value):
-                            is_better = True
-                    elif (
-                        current_metric_value > best_metric_value
-                    ):  # Higher is better for others
-                        is_better = True
+                    logger.debug(f"Metric '{optimization_metric}' has invalid value ({current_metric_value}) for params: {result_params}. Cannot compare.")
 
                 if is_better:
-                    best_params_so_far = params
-                    best_result_so_far = result_dict
-                    # Log improvement
-                    adjusted_params = adjust_params_for_printing(
-                        params, strategy_class_name
-                    )
-                    logger.debug(
-                        f"New best found: Metric({optimization_metric})={current_metric_value:.4f}, Params={adjusted_params}"
-                    )
+                    best_metric_value = current_metric_value
+                    best_params = result_params # Store the params dict
+                    best_metrics_dict = result_metrics # Store the full metrics dict
+                    # Log when a *new* best is found (can keep this debug log)
+                    logger.debug(f"New best {optimization_metric} found: {best_metric_value:.4f} with params: {adjust_params_for_printing(best_params, strategy_class_name)}")
+            # --- End Update Best Result ---
+        else:
+             # Log workers that returned None (error during backtest)
+             # We don't have the params that failed easily here unless we modify run_backtest_for_params return value on error
+             logger.warning(f"A backtest worker task completed but returned None (likely an error during execution). Skipping result.")
 
-                # --- Store All Results (for saving details) ---
-                # Combine params and results into a single dict for the list
-                full_result_entry = {f"params.{k}": v for k, v in params.items()}
-                full_result_entry.update(
-                    {f"result_{k}": v for k, v in result_dict.items()}
-                )
-                all_results_list.append(full_result_entry)
+    # Final Summary Log
+    logger.info(f"Finished processing results for {strategy_class_name} on {symbol}.")
+    logger.info(f"  Processed {processed_unique_count} unique worker results.")
+    logger.info(f"  Found {successful_unique_count} successful backtest results.")
 
-    except KeyboardInterrupt:
-        logger.warning(
-            "Keyboard interrupt received during parallel backtesting. Terminating..."
-        )
-        # Pool context manager handles termination
-        return (
-            best_params_so_far,
-            best_result_so_far,
-            all_results_list,
-        )  # Return what we have so far
-    except Exception as e:
-        logger.error(
-            f"An error occurred during parallel processing: {e}", exc_info=True
-        )
-        return None, None, []  # Indicate failure
 
-    if completed_count != total_combinations:
-        logger.warning(
-            f"Pool processing finished, but completed count ({completed_count}) does not match total combinations ({total_combinations}). Some jobs might have failed silently."
-        )
-
-    logger.info("Parallel backtesting finished.")
-
-    # Log the final best result found
-    if best_params_so_far and best_result_so_far:
-        adjusted_best_params = adjust_params_for_printing(
-            best_params_so_far, strategy_class_name
-        )
-        best_metric_final = best_result_so_far.get(optimization_metric)
-        logger.info(
-            f"Optimization complete. Best Result ({optimization_metric} = {best_metric_final:.4f}):"
-        )
-        logger.info(f"  Params: {adjusted_best_params}")
+    if best_params is None:
+        logger.warning(f"No best parameters found for {strategy_class_name} on {symbol}. No successful backtests or specified metric '{optimization_metric}' not found?")
+        # Return empty best_metrics if no best_params found
+        return None, None, all_results_details
+    
+    # Ensure best_metric_value is formatted correctly for the final log message
+    if best_metric_value is not None and best_metric_value not in [float('inf'), -float('inf')]:
+         final_best_metric_value_str = f"{best_metric_value:.4f}"
     else:
-        logger.warning(
-            "Optimization finished, but no valid best parameters were found."
-        )
+         final_best_metric_value_str = "N/A" # Should not happen if best_params is not None
 
-    return best_params_so_far, best_result_so_far, all_results_list
+
+    logger.info(
+        f"Best parameters found for {strategy_class_name} on {symbol}: "
+        f"{adjust_params_for_printing(best_params, strategy_class_name)} "
+        f"with {optimization_metric} = {final_best_metric_value_str}"
+    )
+
+    # Use the already stored best_metrics_dict
+    if best_metrics_dict is None and best_params is not None: # This condition might occur if the best metric value was inf/-inf
+        logger.warning("Could not retrieve the full metrics dictionary for the determined best parameters.")
+
+
+    # Return the best params, the corresponding full metrics dict, and the list of unique result details
+    return best_params, best_metrics_dict, all_results_details
 
 
 def adjust_params_for_printing(
@@ -609,7 +861,7 @@ def main():
     )
     parser.add_argument(
         "--save-details",
-        action="store_true",  # Handled by $(if ...) in Makefile
+        action="store_true",
         help="Save detailed results of all combinations to CSV.",
     )
     parser.add_argument(
@@ -629,7 +881,7 @@ def main():
     # --- Filter Arguments (Passed from Makefile) ---
     parser.add_argument(
         "--apply-atr-filter",
-        action="store_true",  # Handled by $(if ...) in Makefile
+        action="store_true",
         help="Apply ATR volatility filter.",
     )
     parser.add_argument(
@@ -652,7 +904,7 @@ def main():
     )
     parser.add_argument(
         "--apply-seasonality-filter",
-        action="store_true",  # Handled by $(if ...) in Makefile
+        action="store_true",
         help="Apply seasonality filter (trading hours).",
     )
     parser.add_argument(
@@ -679,29 +931,50 @@ def main():
 
     args = parser.parse_args()
 
-    # Set logging level from args
+    # --- Centralized Logging Configuration --- Simplified ---
     log_level = getattr(logging, args.log.upper(), logging.INFO)
-    logging.getLogger().setLevel(log_level)
+    log_queue = multiprocessing.Queue(-1)
+
+    # --- Configure Handlers for the Listener ---
+    log_formatter = logging.Formatter(
+        '%(asctime)s - %(processName)s - %(levelname)s - [%(name)s] - %(message)s'
+    )
+    # Use stderr to avoid interfering with tqdm progress bar
+    stream_handler = logging.StreamHandler(sys.stderr)
+    stream_handler.setFormatter(log_formatter)
+    # Add other handlers like FileHandler here if needed
+
+    # --- Configure the Root Logger (in the main process) ---
+    root_logger = logging.getLogger() 
+    # Clear any existing handlers from the root logger (important!)
+    if root_logger.hasHandlers():
+        root_logger.handlers.clear()
+    # The root logger *itself* doesn't need handlers; the listener uses them.
+
+    # --- Start the QueueListener ---
+    # Pass the queue and the handlers that will process the logs
+    listener = QueueListener(log_queue, stream_handler) # Add file_handler etc. here
+    listener.start()
+
+    # Get logger instance for use in main()
+    logger = logging.getLogger(__name__) 
+    logger.info(f"Logging configured. Level: {args.log.upper()}. Listener started.")
+    # --- End Logging Configuration ---
 
     try:
         logger.info(f"Starting optimization run with args: {args}")
-
-        # Validate filter arguments consistency
+        # ... (rest of main function: validate args, load data, pre-calculate, slice data)
         if args.apply_seasonality_filter and not args.allowed_trading_hours_utc:
             raise ValueError(
                 "--allowed-trading-hours-utc must be set when --apply-seasonality-filter is enabled."
             )
 
-        # Load FULL dataset first using the required --file argument
         full_data = load_csv_data(str(args.file), symbol=args.symbol)
         full_data.sort_index(inplace=True)
         logger.info(
             f"Loaded full dataset: {len(full_data)} rows from {full_data.index.min()} to {full_data.index.max()}"
         )
 
-        # --- Pre-calculate Indicators needed for Filters (e.g., ATR) ---
-        # Doing this once on the full dataset slice used for optimization
-        # Ensure data_utils has calculate_atr or similar
         if args.apply_atr_filter:
             full_data["atr"] = calculate_atr(full_data, period=args.atr_filter_period)
             if args.atr_filter_sma_period > 0:
@@ -711,9 +984,7 @@ def main():
             logger.info(
                 f"Pre-calculated ATR (period={args.atr_filter_period}, sma={args.atr_filter_sma_period}) for full dataset."
             )
-        # --- End Indicator Pre-calculation ---
 
-        # Slice data for optimization period if start/end dates are provided
         opt_data = full_data
         slice_info = "full dataset"
         if args.opt_start or args.opt_end:
@@ -731,20 +1002,16 @@ def main():
                     f"Error slicing data for optimization period ({args.opt_start} - {args.opt_end}): {e}",
                     exc_info=True,
                 )
-                # Decide how to handle: exit or proceed with full data?
-                # For safety, let's exit if slicing fails or results in empty data
                 raise ValueError(f"Failed to slice data for optimization: {e}")
 
         logger.info(
             f"Using data slice for optimization: {len(opt_data)} rows ({slice_info})"
         )
 
-        # --- Prepare shared arguments for the worker function ---
-        # Include filter parameters to be passed to run_backtest_for_params
         shared_worker_args = {
             "symbol": args.symbol,
-            "data": opt_data,  # Pass the slice with pre-calculated indicators
-            "trade_units": args.units,
+            "data": opt_data,
+            "units": args.units,
             "commission_bps": args.commission,
             "initial_balance": args.balance,
             "apply_atr_filter": args.apply_atr_filter,
@@ -754,25 +1021,24 @@ def main():
             "apply_seasonality_filter": args.apply_seasonality_filter,
             "allowed_trading_hours_utc": args.allowed_trading_hours_utc,
             "apply_seasonality_to_symbols": args.apply_seasonality_to_symbols,
+            "data_start_trim": args.opt_start,
+            "data_end_trim": args.opt_end,
+            "optimize_metric": args.metric,
         }
-        # --- End Shared Args Prep ---
 
-        # Run Optimization on the potentially sliced data
-        # This function now needs to accept shared_worker_args
         best_params, best_result_dict, all_results_list = optimize_strategy(
             strategy_short_name=args.strategy,
             config_path=args.config,
-            shared_worker_args=shared_worker_args,  # Pass the dict
+            shared_worker_args=shared_worker_args,
             optimization_metric=args.metric,
             num_processes=args.processes,
+            log_queue=log_queue # Pass the queue
         )
 
-        # --- Save Best Parameters ---
+        # --- Save Best Parameters --- (Logic unchanged)
         if best_params:
             strategy_class = STRATEGY_MAP[args.strategy]
             strategy_class_name = strategy_class.__name__
-            # Adjust params before saving if needed (like removing filter args if they are in best_params)
-            # Or ensure save_best_params only saves strategy-specific ones
             save_best_params(
                 output_config_path=args.output_config,
                 symbol=args.symbol,
@@ -785,83 +1051,42 @@ def main():
                 "Optimization did not yield best parameters. Results file not updated."
             )
 
-        # --- Save Detailed Results if requested ---
+        # --- Save Detailed Results --- (Logic unchanged, uses all_results_list)
         if args.save_details:
             if all_results_list:
                 try:
-                    # Define default filename if not provided
                     if args.details_file is None:
                         details_dir = Path("results/optimization")
                         details_dir.mkdir(parents=True, exist_ok=True)
                         filename_ts = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
                         base_name = f"{args.strategy}_{args.symbol}"
-
-                        # Add filter info to filename if applied
                         filter_suffix = ""
                         if args.apply_atr_filter:
                             filter_suffix += f"_atr{args.atr_filter_period}x{args.atr_filter_multiplier:.1f}sma{args.atr_filter_sma_period}"
                         if args.apply_seasonality_filter:
                             filter_suffix += f"_season{args.allowed_trading_hours_utc.replace('-','')}"
                             if args.apply_seasonality_to_symbols:
-                                # Keep symbols short in filename
                                 syms = args.apply_seasonality_to_symbols.split(",")
                                 filter_suffix += f"_{''.join(s[:3] for s in syms)}"
-
-                        # Sanitize suffix
                         filter_suffix = sanitize_filename(filter_suffix)
-
                         filename = f"{base_name}{filter_suffix}_optimize_details_{filename_ts}.csv"
                         details_path = details_dir / filename
                     else:
                         details_path = Path(args.details_file)
                         details_path.parent.mkdir(parents=True, exist_ok=True)
 
-                    # Flatten the results for CSV
-                    flat_results = []
-                    if all_results_list:
-                        # Assuming the first item has all keys needed for columns
-                        # Get param keys by splitting 'params.'
-                        param_keys = sorted(
-                            [
-                                k
-                                for k in all_results_list[0].keys()
-                                if k.startswith("params.")
-                            ]
-                        )
-                        result_keys = sorted(
-                            [
-                                k
-                                for k in all_results_list[0].keys()
-                                if k.startswith("result_")
-                            ]
-                        )
-                        # Add non-prefixed keys if any (shouldn't be any with current structure)
-                        other_keys = sorted(
-                            [
-                                k
-                                for k in all_results_list[0].keys()
-                                if not k.startswith(("params.", "result_"))
-                            ]
-                        )
-
-                        # Ensure consistent column order
-                        all_columns = param_keys + result_keys + other_keys
-
-                        for res in all_results_list:
-                            # Ensure all keys exist in each dict, adding None if missing
-                            flat_results.append(
-                                {col: res.get(col) for col in all_columns}
-                            )
-
-                    details_df = pd.DataFrame(flat_results)
-                    # Optional: Sort by the optimization metric descending (higher is better)
-                    # Handle max_drawdown separately (lower is better)
+                    # ** Adjusted Key Prefixes for DataFrame **
+                    details_df = pd.DataFrame(all_results_list) # Assumes keys are already prefixed in optimize_strategy
+                    
+                    # Ensure correct metric key with prefix
                     metric_col = f"result_{args.metric}"
                     if metric_col in details_df.columns:
                         ascending_sort = args.metric == "max_drawdown"
                         details_df.sort_values(
                             by=metric_col, ascending=ascending_sort, inplace=True
                         )
+                    else:
+                        logger.warning(f"Metric column '{metric_col}' not found for sorting details CSV.")
 
                     details_df.to_csv(details_path, index=False)
                     logger.info(
@@ -883,7 +1108,12 @@ def main():
             f"An unexpected error occurred during optimization: {e}", exc_info=True
         )
     finally:
-        logger.info("--- Optimization script finished. ---")
+        # --- Cleanly Shutdown Logging ---
+        logger.info("--- Optimization script finishing. Shutting down logger... ---")
+        log_queue.put_nowait(None)
+        # Stop the listener
+        listener.stop()
+        logger.info("Logging listener stopped.")
 
 
 if __name__ == "__main__":

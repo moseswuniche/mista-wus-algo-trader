@@ -251,17 +251,16 @@ fetch-data:
 ## Run simulated forward test (single run)
 forward-test:
 	@echo "Running simulated forward test (use FWD_ARGS=...)"
-	# Example: make forward-test FWD_ARGS=" \
+	# Example: make forward-test FWD_ARGS=\" \
 	#   --strategy BBReversion \
 	#   --symbol ETHUSDT \
 	#   --file data/1h/ETHUSDT_1h.csv \
 	#   --fwd-start 2023-08-18 \
 	#   --commission 7.5 \
 	#   --balance 1000 \
+	#   --param-config results/optimize/best_params.yaml \
 	#   --apply-atr-filter \
-	#   --atr-filter-multiplier 2.1 \
-	#   --apply-seasonality-filter \
-	#   --allowed-trading-hours-utc '8-20'" # (Note: FWD_ARGS uses a single string)
+	#   --apply-seasonality-filter \" # (Note: FWD_ARGS uses a single string)
 	$(POETRY) run $(PYTHON_CMD) -m src.trading_bots.forward_test $(FWD_ARGS)
 
 ## Run forward testing for multiple strategies and symbols
@@ -276,18 +275,20 @@ forward-test-batch:
 	echo "Balance   : $(BALANCE)"; \
 	for strategy in $(STRATEGIES); do \
 	    for symbol in $(SYMBOLS); do \
-	        file_path="data/$(INTERVAL)/$${symbol}_$(INTERVAL).csv"; \
-	        if [ -f "$${file_path}" ]; then \
-	            echo ""; \
-	            echo "--- Fwd Testing: Strategy=$${strategy}, Symbol=$${symbol}, File=$${file_path} ---"; \
+	        file_path=\"data/$(INTERVAL)/$${symbol}_$(INTERVAL).csv\"; \
+	        if [ -f \"$${file_path}\" ]; then \
+	            echo \"\"; \
+	            echo \"--- Fwd Testing: Strategy=$${strategy}, Symbol=$${symbol}, File=$${file_path} ---\"; \
 	            $(POETRY) run $(PYTHON_CMD) -m src.trading_bots.forward_test \
 	                --strategy $${strategy} \
 	                --symbol $${symbol} \
 	                --file $${file_path} \
+	                --param-config \"$(BEST_PARAMS_FILE)\" \
 	                --fwd-start $(FWD_START_DATE) \
 	                --fwd-end $(FWD_END_DATE) \
 	                --commission $(COMMISSION) \
 	                --balance $(BALANCE) \
+	                --units 1.0 \
 	                $(if $(filter true,$(APPLY_ATR_FILTER)),--apply-atr-filter) \
 	                --atr-filter-period $(ATR_FILTER_PERIOD) \
 	                --atr-filter-multiplier $(ATR_FILTER_MULTIPLIER) \

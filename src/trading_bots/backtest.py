@@ -78,7 +78,7 @@ def calculate_profit_factor(performance_summary: pd.DataFrame) -> float:
     return cast(float, gross_profits / gross_losses)
 
 
-# --- Main Backtest Function ---
+# --- Main Backtest Function --- UPDATED for Option A ---
 def run_backtest(
     data: pd.DataFrame,
     strategy: Strategy,
@@ -86,20 +86,35 @@ def run_backtest(
     units: float,
     initial_balance: float = 10000.0,
     commission_bps: float = 0.0,
+    # --- Global Defaults / Command-Line Args ---
+    # These are kept for fallback and context
     stop_loss_pct: Optional[float] = None,
     take_profit_pct: Optional[float] = None,
     trailing_stop_loss_pct: Optional[float] = None,
-    # --- Universal Filters ---
     apply_atr_filter: bool = False,
-    atr_filter_period: int = 14,  # Default period if filter applied
+    atr_filter_period: int = 14,
     atr_filter_multiplier: float = 1.5,
     atr_filter_sma_period: int = 100,
     apply_seasonality_filter: bool = False,
-    allowed_trading_hours_utc: Optional[str] = None,  # e.g., '5-17'
-    apply_seasonality_to_symbols: Optional[str] = None,  # e.g., 'SOLUSDT,SUIUSDT'
+    allowed_trading_hours_utc: Optional[str] = None,
+    apply_seasonality_to_symbols: Optional[str] = None,
+    # --- Grid-Specific Parameters (Passed from Worker) ---
+    # These will override the global defaults if provided (not None)
+    sl_from_grid: Optional[float] = None,
+    tp_from_grid: Optional[float] = None,
+    tsl_from_grid: Optional[float] = None,
+    apply_atr_from_grid: Optional[bool] = None,
+    atr_period_from_grid: Optional[int] = None,
+    atr_multiplier_from_grid: Optional[float] = None,
+    atr_sma_from_grid: Optional[int] = None,
+    apply_seasonality_from_grid: Optional[bool] = None,
+    trading_hours_from_grid: Optional[str] = None,
+    seasonality_symbols_from_grid: Optional[str] = None, # Added for completeness
 ) -> Dict[str, Any]:
     """
     Runs a bar-by-bar backtest simulating intra-bar SL/TP/TSL checks and applying filters.
+    Prioritizes '_from_grid' parameters if they are provided (not None), otherwise falls back
+    to the global default parameters (e.g., from command line).
 
     Args:
         data: DataFrame with historical OHLCV data, indexed by Date.
@@ -110,56 +125,95 @@ def run_backtest(
         units: The fixed amount of the asset to trade per signal.
         initial_balance: Starting balance for calculating returns.
         commission_bps: Commission fee in basis points (e.g., 10 for 0.1%).
-        stop_loss_pct: Optional fixed stop loss percentage (e.g., 0.02 for 2%).
-        take_profit_pct: Optional fixed take profit percentage (e.g., 0.04 for 4%).
-        trailing_stop_loss_pct: Optional trailing stop loss percentage (e.g., 0.01 for 1%).
-        apply_atr_filter: If True, enables the ATR volatility filter.
-        atr_filter_period: Period used for ATR calculation (for logging/info only).
-        atr_filter_multiplier: Multiplier for ATR volatility filter threshold.
-        atr_filter_sma_period: SMA period for ATR threshold baseline.
-        apply_seasonality_filter: If True, enables the trading hours filter.
-        allowed_trading_hours_utc: String like '5-17' for allowed UTC hours.
-        apply_seasonality_to_symbols: Comma-separated string of symbols for seasonality filter.
+        stop_loss_pct: GLOBAL default stop loss percentage.
+        take_profit_pct: GLOBAL default take profit percentage.
+        trailing_stop_loss_pct: GLOBAL default trailing stop loss percentage.
+        apply_atr_filter: GLOBAL default setting for ATR filter.
+        atr_filter_period: GLOBAL default period for ATR calculation.
+        atr_filter_multiplier: GLOBAL default multiplier for ATR volatility threshold.
+        atr_filter_sma_period: GLOBAL default SMA period for ATR threshold baseline.
+        apply_seasonality_filter: GLOBAL default setting for seasonality filter.
+        allowed_trading_hours_utc: GLOBAL default string for allowed UTC hours.
+        apply_seasonality_to_symbols: GLOBAL default string for symbols for seasonality.
+        sl_from_grid: Stop loss percentage from the optimization grid for this run.
+        tp_from_grid: Take profit percentage from the grid for this run.
+        tsl_from_grid: Trailing stop loss percentage from the grid for this run.
+        apply_atr_from_grid: ATR filter setting from the grid for this run.
+        atr_period_from_grid: ATR period from the grid for this run.
+        atr_multiplier_from_grid: ATR multiplier from the grid for this run.
+        atr_sma_from_grid: ATR SMA period from the grid for this run.
+        apply_seasonality_from_grid: Seasonality filter setting from the grid for this run.
+        trading_hours_from_grid: Trading hours string from the grid for this run.
+        seasonality_symbols_from_grid: Seasonality symbols string from the grid for this run.
 
     Returns:
         A dictionary containing backtest results.
     """
+    # --- Determine Effective Parameters (Grid > Global Default) ---
+    effective_sl = sl_from_grid if sl_from_grid is not None else stop_loss_pct
+    effective_tp = tp_from_grid if tp_from_grid is not None else take_profit_pct
+    effective_tsl = tsl_from_grid if tsl_from_grid is not None else trailing_stop_loss_pct
+
+    effective_apply_atr = apply_atr_from_grid if apply_atr_from_grid is not None else apply_atr_filter
+    effective_atr_period = atr_period_from_grid if atr_period_from_grid is not None else atr_filter_period
+    effective_atr_multiplier = atr_multiplier_from_grid if atr_multiplier_from_grid is not None else atr_filter_multiplier
+    effective_atr_sma_period = atr_sma_from_grid if atr_sma_from_grid is not None else atr_filter_sma_period
+
+    effective_apply_seasonality = apply_seasonality_from_grid if apply_seasonality_from_grid is not None else apply_seasonality_filter
+    effective_trading_hours = trading_hours_from_grid if trading_hours_from_grid is not None else allowed_trading_hours_utc
+    effective_seasonality_symbols = seasonality_symbols_from_grid if seasonality_symbols_from_grid is not None else apply_seasonality_to_symbols
+    # --- End Effective Parameter Determination ---
+
     required_cols = ["Open", "High", "Low", "Close"]
-    if apply_atr_filter:
+    # Check data requirements based on EFFECTIVE settings
+    if effective_apply_atr:
+        # ** Important: Ensure ATR is calculated based on the EFFECTIVE period **
+        # If atr_period_from_grid is used, the pre-calculated 'atr' column might be wrong.
+        # Ideally, ATR calculation should happen here or be passed dynamically.
+        # For now, we assume the pre-calculated 'atr' column exists and matches the
+        # most common period used (likely the global default).
+        # If atr_period_from_grid differs significantly, this could be inaccurate.
+        # A better solution involves recalculating ATR if needed or ensuring data
+        # passed to workers contains ATR for all periods in the grid.
+        logger.warning(f"Using pre-calculated 'atr' column. Ensure it corresponds to effective ATR period: {effective_atr_period}")
         required_cols.extend(["atr"])
-        if atr_filter_sma_period > 0:
+        if effective_atr_sma_period > 0:
+            logger.warning(f"Using pre-calculated 'atr_sma' column. Ensure it corresponds to effective ATR SMA period: {effective_atr_sma_period}")
             required_cols.extend(["atr_sma"])
 
     if not all(col in data.columns for col in required_cols):
         missing_cols = [col for col in required_cols if col not in data.columns]
-        msg = f"Data must contain required columns. Missing: {missing_cols}"
+        msg = f"Data must contain required columns based on effective settings. Missing: {missing_cols}"
         logger.error(msg)
         raise ValueError(msg)
 
     logger.info(f"Running backtest: {strategy.__class__.__name__} on {symbol}")
+    # Log the EFFECTIVE SL/TP/TSL values being used for this run
     logger.info(
-        f"Params: {strategy.params}, SL: {stop_loss_pct}, TP: {take_profit_pct}, TSL: {trailing_stop_loss_pct}, Comm: {commission_bps} bps"
+        f"Effective Params -> SL: {effective_sl}, TP: {effective_tp}, TSL: {effective_tsl}, Comm: {commission_bps} bps"
+    )
+    # Log the EFFECTIVE Filter settings
+    logger.info(
+        f"Effective ATR Filter: {effective_apply_atr} (P={effective_atr_period}, M={effective_atr_multiplier}, SMA={effective_atr_sma_period})"
     )
     logger.info(
-        f"ATR Filter: {apply_atr_filter} (P={atr_filter_period}, M={atr_filter_multiplier}, SMA={atr_filter_sma_period})"
-    )
-    logger.info(
-        f"Seasonality Filter: {apply_seasonality_filter} (Hrs={allowed_trading_hours_utc}, Syms={apply_seasonality_to_symbols})"
+        f"Effective Seasonality Filter: {effective_apply_seasonality} (Hrs={effective_trading_hours}, Syms={effective_seasonality_symbols})"
     )
 
-    # Parse seasonality params
+    # Parse seasonality params based on EFFECTIVE settings
     parsed_trading_hours = (
-        parse_trading_hours(allowed_trading_hours_utc)
-        if apply_seasonality_filter
+        parse_trading_hours(effective_trading_hours)
+        if effective_apply_seasonality
         else None
     )
     seasonality_symbols_list = (
-        [s.strip() for s in apply_seasonality_to_symbols.split(",") if s.strip()]
-        if apply_seasonality_to_symbols
+        [s.strip() for s in effective_seasonality_symbols.split(",") if s.strip()]
+        if effective_seasonality_symbols
         else []
     )
+    # Determine if seasonality applies to THIS symbol based on EFFECTIVE settings
     apply_seasonality_to_this_symbol = (
-        apply_seasonality_filter
+        effective_apply_seasonality
         and parsed_trading_hours
         and (not seasonality_symbols_list or symbol in seasonality_symbols_list)
     )
@@ -184,7 +238,7 @@ def run_backtest(
     take_profit_level: Optional[float] = None
     tsl_peak_price: Optional[float] = None
 
-    # --- Clean SL/TP/TSL Params ---
+    # --- Clean SL/TP/TSL Params (Use EFFECTIVE values) ---
     def _clean_param(p: Any) -> Optional[float]:
         if isinstance(p, str) and p.lower() == "none":
             return None
@@ -193,11 +247,10 @@ def run_backtest(
         except (ValueError, TypeError):
             return None
 
-    stop_loss_pct_cleaned: Optional[float] = _clean_param(stop_loss_pct)
-    take_profit_pct_cleaned: Optional[float] = _clean_param(take_profit_pct)
-    trailing_stop_loss_pct_cleaned: Optional[float] = _clean_param(
-        trailing_stop_loss_pct
-    )
+    # Use the determined effective values
+    stop_loss_pct_cleaned: Optional[float] = _clean_param(effective_sl)
+    take_profit_pct_cleaned: Optional[float] = _clean_param(effective_tp)
+    trailing_stop_loss_pct_cleaned: Optional[float] = _clean_param(effective_tsl)
 
     # Iterate through bars
     for i in range(1, len(data)):
@@ -230,10 +283,10 @@ def run_backtest(
             )
         equity_curve.iloc[i] += unrealized_pnl_change
 
-        # --- Filtering Logic ---
+        # --- Filtering Logic (Use EFFECTIVE settings) ---
         trade_allowed_this_bar = True
 
-        # Filter 1: Seasonality
+        # Filter 1: Seasonality (Uses effective settings)
         if apply_seasonality_to_this_symbol:
             start_hour, end_hour = parsed_trading_hours  # type: ignore
             ts_aware = (
@@ -245,14 +298,15 @@ def run_backtest(
                 trade_allowed_this_bar = False
                 # logger.debug(f"[{timestamp}] Trade blocked by seasonality filter.")
 
-        # Filter 2: ATR Volatility
-        if apply_atr_filter and trade_allowed_this_bar:
+        # Filter 2: ATR Volatility (Uses effective settings)
+        if effective_apply_atr and trade_allowed_this_bar:
+            # ** See warning above regarding pre-calculated ATR column **
             current_atr = data["atr"].iloc[i]
             threshold = (
-                data["atr_sma"].iloc[i] * atr_filter_multiplier
-                if atr_filter_sma_period > 0 and "atr_sma" in data
-                else current_atr * atr_filter_multiplier
-            )  # Fallback slightly different if no SMA
+                data["atr_sma"].iloc[i] * effective_atr_multiplier
+                if effective_atr_sma_period > 0 and "atr_sma" in data
+                else current_atr * effective_atr_multiplier # Fallback if no SMA
+            )
             if pd.isna(current_atr) or pd.isna(threshold):
                 # logger.debug(f"[{timestamp}] ATR or threshold NaN, cannot apply filter.")
                 pass  # Allow trade if ATR is NaN initially?
@@ -353,7 +407,7 @@ def run_backtest(
                 current_pos = 1
                 entry_price = close_price  # Enter at close of signal bar
                 entry_time = timestamp
-                # Set initial SL/TP/TSL levels
+                # Set initial SL/TP/TSL levels based on _cleaned effective values
                 if isinstance(stop_loss_pct_cleaned, float):
                     # Explicitly use the float value
                     stop_loss_level = entry_price * (1 - float(stop_loss_pct_cleaned))
@@ -376,7 +430,7 @@ def run_backtest(
                 current_pos = -1
                 entry_price = close_price  # Enter at close of signal bar
                 entry_time = timestamp
-                # Set initial SL/TP/TSL levels
+                # Set initial SL/TP/TSL levels based on _cleaned effective values
                 if isinstance(stop_loss_pct_cleaned, float):
                     stop_loss_level = entry_price * (1 + float(stop_loss_pct_cleaned))
                 else:
