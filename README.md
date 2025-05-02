@@ -16,8 +16,8 @@ Features include:
 - **Sequential** Batch optimization via `make trigger-threaded-optimizer`
 - Optimization based on selectable performance metrics
 - Simulated forward testing (`forward_test.py`) with HTML reports
-- Saving of detailed optimization results to CSV
-- Analysis of trade logs and optimization detail results (`analyze_trades.py`)
+- Saving of detailed optimization results (summary metrics only) to CSV, using batching.
+- Analysis of trade logs and optimization detail results (summary metrics) (`analyze_trades.py`)
   - Generation of performance summary plots and HTML reports
 - Historical data fetching (`fetch_data.py`)
 - **Regime Filtering:** Optional MA-based trend filter (SMA or EMA) available in all standard strategies (configured via `trend_filter_period` and `trend_filter_use_ema`).
@@ -57,6 +57,9 @@ Features include:
 │   │   └── summary           # Aggregated summary CSV
 │   ├── optimization          # Detailed optimization CSVs
 │   │   └── ...
+│   ├── optimize            # Root directory for optimization results
+│   │   ├── details         # Detailed optimization CSVs (summary metrics only)
+│   │   └── summary         # Placeholder for potential future summary files
 │   └── forward_test          # Forward test results (plots, reports, trades)
 │       ├── plots
 │       ├── reports
@@ -139,6 +142,8 @@ Use `make help` to see available commands and default variable values.
     *   Configure parameter search ranges, including filters (`atr_*`, `seasonality_*`), risk management (`stop_loss_pct`, etc.), and strategy specifics, in `config/optimize_params.yaml`.
     *   Specify the optimization target using `METRIC=` or `TSO_METRIC=` (Makefile variables) or `--metric` (`OPTIMIZE_ARGS`). Choices: `cumulative_profit`, `final_balance`, `sharpe_ratio`, `profit_factor`, `max_drawdown`, `win_rate`.
     *   Use `SAVE_DETAILS=true` or `TSO_SAVE_DETAILS=true` (Makefile variables) or `--save-details` (`OPTIMIZE_ARGS`) to save all tested combinations to a CSV file in `results/optimization/`.
+    *   The details CSV contains only summary metrics for each parameter combination, not the full trade log.
+    *   Use `--resume` (or `RESUME=true` in `trigger-threaded-optimizer`) to skip parameters already present in the latest matching details file for that strategy/symbol/filter combination. If `--details-file` is specified, it resumes from that exact file.
     *   Set initial balance using `BALANCE=` or `TSO_BALANCE=` or `--balance`.
     *   Best parameters (including filters, SL/TP/TSL, and trend filter choice) are saved to `--output-config` (default: `config/best_params.yaml`).
 *   **Run Simulated Forward Test:** Runs the backtester using the best parameters found during optimization (from `config/best_params.yaml`) on a *different* historical data period. Generates reports and saves trade logs.
@@ -189,6 +194,7 @@ Use `make help` to see available commands and default variable values.
 
 *   `config/best_params.yaml`: Stores the best parameters found by optimization for each symbol/strategy combination.
 *   `results/optimization/`: Contains detailed CSV logs of *all* combinations tested during optimization if `SAVE_DETAILS=true` is used.
+*   `results/optimization/details/`: Contains detailed CSV logs (summary metrics only) of *all* combinations tested during optimization if `SAVE_DETAILS=true` is used.
 *   `results/forward_test/reports/`: Contains HTML reports summarizing forward test performance, including metrics and equity curve plots.
 *   `results/forward_test/plots/`: PNG images of equity curves from forward tests.
 *   `results/forward_test/trades/`: CSV files detailing the trades made during each forward test.

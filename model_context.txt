@@ -6,7 +6,7 @@
 *   `src/trading_bots/trader.py`: Handles live trading logic, WebSocket management, order execution, runtime configuration, and applies configured filters (ATR, Seasonality).
 *   `src/trading_bots/strategies/`: Directory containing strategy implementations (e.g., `LongShortStrategy`, `MACross`, `RSIReversion`, `BBReversion`), all inheriting from `base_strategy.Strategy`. Strategies now support EMA/SMA trend filters and may include specific enhancements (e.g., ATR-adjusted RSI, Z-score volume/return in LongShort).
 *   `src/trading_bots/backtest.py`: Provides the `run_backtest` function for simulating strategy performance on historical data, including intra-bar SL/TP checks and application of universal filters (ATR, Seasonality).
-*   `src/trading_bots/optimize.py`: Performs grid search optimization for strategy parameters (defined in `config/optimize_params.yaml`, including filters and risk management), leveraging multiprocessing for parallel backtests (`run_backtest_for_params`). Saves best parameters to `config/best_params.yaml`.
+*   `src/trading_bots/optimize.py`: Performs grid search optimization for strategy parameters (defined in `config/optimize_params.yaml`, including filters and risk management), leveraging multiprocessing for parallel backtests (`run_backtest_for_params`). Saves best parameters to `config/best_params.yaml`. Saves detailed results (summary metrics only) to CSV files in batches (`--save-details`). Includes enhanced resume logic (`--resume`) to automatically find the latest matching details CSV if a specific file isn't provided.
 *   `src/trading_bots/forward_test.py`: Runs a backtest using optimized parameters (including filters) on a specified forward period, generating reports and trade logs.
 *   `src/trading_bots/run_batch_optimization.py`: Orchestrates running multiple `optimize.py` tasks in parallel for different strategy/symbol combinations, passing filter flags.
 *   `src/trading_bots/analyze_trades.py`: Analyzes trade logs (`_trades.csv`) or optimization detail summaries (`_optimize_details_*.csv`) to generate performance reports and plots.
@@ -14,14 +14,17 @@
 *   `src/trading_bots/technical_indicators.py`: Contains functions for calculating indicators like ATR, SMA, EMA.
 *   `config/`: Contains YAML configuration files (`optimize_params.yaml`, `best_params.yaml`, `runtime_config.yaml`). `optimize_params.yaml` now includes ranges for filter parameters.
 *   `results/`: Default directory for output (optimization details, forward test reports/trades, analysis results). Often gitignored.
+*   `results/optimize/details`: Directory containing detailed CSV optimization results (summary metrics only).
 *   `data/`: Default directory for storing downloaded CSV market data. Often gitignored.
-*   `Makefile`: Provides convenient commands for common workflows, including flags to enable filters (`APPLY_ATR_FILTER`, `APPLY_SEASONALITY_FILTER` and `TSO_` variants).
+*   `Makefile`: Provides convenient commands for common workflows, including flags to enable filters (`APPLY_ATR_FILTER`, `APPLY_SEASONALITY_FILTER` and `TSO_` variants) and resume (`RESUME`).
 
 **Key Makefile Targets & Workflow:**
 1.  `make install`: Set up environment using Poetry.
 2.  `make fetch-data`: Download historical data.
 3.  `make optimize` / `make optimize-batch` / `make trigger-threaded-optimizer`: Run parameter optimization.
     *   Flags like `APPLY_ATR_FILTER=true` / `TSO_APPLY_ATR_FILTER=true` enable corresponding filters during optimization.
+    *   `RESUME=true` (for `trigger-threaded-optimizer`) or `--resume` (`OPTIMIZE_ARGS`) enables skipping completed parameters based on existing details files.
+    *   `SAVE_DETAILS=true` / `TSO_SAVE_DETAILS=true` or `--save-details` enables saving detailed summary metrics to CSV.
     *   `optimize`: Single strategy/symbol, parallel internal backtests.
     *   `optimize-batch`: Multiple strategy/symbol pairs run concurrently via `run_batch_optimization.py`.
     *   `trigger-threaded-optimizer`: Multiple strategy/symbol pairs run sequentially, each potentially using parallel internal backtests.
@@ -34,5 +37,5 @@
 *   Project uses Poetry for dependency management.
 *   Code includes type hints and is checked with MyPy.
 *   Live trading requires API keys (env vars or AWS Secrets Manager).
-*   Be mindful of the distinction between optimization (`optimize.py`) and forward testing (`forward_test.py`) regarding output files (especially trade logs).
+*   Be mindful of the distinction between optimization (`optimize.py`) and forward testing (`forward_test.py`) regarding output files (especially trade logs vs. summary detail CSVs).
 *   Universal filters (ATR, Seasonality) need to be explicitly enabled via command-line arguments or Makefile variables for `optimize`, `forward-test`, and `trader` commands if their use is intended. Filter parameters themselves are generally read from config files (`optimize_params.yaml`, `best_params.yaml`, `runtime_config.yaml`). 
