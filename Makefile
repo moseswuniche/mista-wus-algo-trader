@@ -208,7 +208,8 @@ optimize:
 		--atr-filter-sma-period $(ATR_FILTER_SMA_PERIOD) \
 		$(if $(filter true,$(APPLY_SEASONALITY_FILTER)),--apply-seasonality-filter) \
 		--allowed-trading-hours-utc "$(ALLOWED_TRADING_HOURS_UTC)" \
-		--apply-seasonality-to-symbols "$(APPLY_SEASONALITY_TO_SYMBOLS)"
+		--apply-seasonality-to-symbols "$(APPLY_SEASONALITY_TO_SYMBOLS)" \
+		$(if $(filter true,$(RESUME)),--resume)
 
 ## Run strategy optimization for multiple strategies and symbols
 # Passes Make variables to the batch runner script using native Make conditionals
