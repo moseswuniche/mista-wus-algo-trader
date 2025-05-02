@@ -162,7 +162,7 @@ def ensure_results_dir(base_path: str) -> Path:
 # --- Main Forward Testing Function ---
 def run_forward_test(
     strategy_short_name: str,
-    param_config_path: str, # Path to the BEST params YAML
+    param_config_path: str,  # Path to the BEST params YAML
     symbol: str,
     data: pd.DataFrame,  # Data ALREADY potentially sliced by main()
     trade_units: float,
@@ -181,7 +181,7 @@ def run_forward_test(
     fwd_test_end: Optional[str] = None,
 ):
     """Runs a backtest on the forward test data slice using optimized parameters
-       loaded from the specified configuration file.
+    loaded from the specified configuration file.
     """
     logger.info(f"--- Running Forward Test for {strategy_short_name} on {symbol} --- ")
     logger.info(f"Loading optimized parameters from: {param_config_path}")
@@ -207,12 +207,24 @@ def run_forward_test(
     # 3. Extract specific parameters for run_backtest
     # --- Strategy Core Params ---
     core_strategy_params = {
-        k: v for k, v in best_params_all.items()
-        if k not in [
+        k: v
+        for k, v in best_params_all.items()
+        if k
+        not in [
             # Exclude SL/TP/TSL and known filter keys
-            "stop_loss_pct", "take_profit_pct", "trailing_stop_loss_pct",
-            "apply_atr_filter", "atr_filter_period", "atr_filter_threshold", "atr_filter_multiplier", "atr_filter_sma_period",
-            "apply_seasonality", "seasonality_start_hour", "seasonality_end_hour", "allowed_trading_hours_utc", "apply_seasonality_to_symbols"
+            "stop_loss_pct",
+            "take_profit_pct",
+            "trailing_stop_loss_pct",
+            "apply_atr_filter",
+            "atr_filter_period",
+            "atr_filter_threshold",
+            "atr_filter_multiplier",
+            "atr_filter_sma_period",
+            "apply_seasonality",
+            "seasonality_start_hour",
+            "seasonality_end_hour",
+            "allowed_trading_hours_utc",
+            "apply_seasonality_to_symbols",
         ]
     }
     # Clean None strings just in case
@@ -229,18 +241,23 @@ def run_forward_test(
     apply_atr_grid = best_params_all.get("apply_atr_filter")
     atr_period_grid = best_params_all.get("atr_filter_period")
     # Use 'atr_filter_threshold' key from YAML for multiplier
-    atr_multiplier_grid = best_params_all.get("atr_filter_threshold") 
+    atr_multiplier_grid = best_params_all.get("atr_filter_threshold")
     atr_sma_grid = best_params_all.get("atr_filter_sma_period")
     apply_seasonality_grid = best_params_all.get("apply_seasonality")
     # Construct trading hours string from start/end hours in grid
     start_hour_grid = best_params_all.get("seasonality_start_hour")
     end_hour_grid = best_params_all.get("seasonality_end_hour")
-    trading_hours_grid = f"{start_hour_grid}-{end_hour_grid}" if start_hour_grid is not None and end_hour_grid is not None else None
+    trading_hours_grid = (
+        f"{start_hour_grid}-{end_hour_grid}"
+        if start_hour_grid is not None and end_hour_grid is not None
+        else None
+    )
     seasonality_symbols_grid = best_params_all.get("apply_seasonality_to_symbols")
 
-
     # 4. Instantiate Strategy
-    logger.info(f"Instantiating {strategy_class_name} with core params: {core_strategy_params}")
+    logger.info(
+        f"Instantiating {strategy_class_name} with core params: {core_strategy_params}"
+    )
     try:
         strategy_instance = strategy_class(**core_strategy_params)
     except TypeError as e:
@@ -250,7 +267,9 @@ def run_forward_test(
         return None
 
     # 5. Run Backtest (Data is already sliced and indicators pre-calculated in main)
-    logger.info("Running backtest on the forward test data using loaded optimized parameters...")
+    logger.info(
+        "Running backtest on the forward test data using loaded optimized parameters..."
+    )
     fwd_results = None
     try:
         fwd_results = run_backtest(
@@ -261,7 +280,7 @@ def run_forward_test(
             initial_balance=initial_balance,
             commission_bps=commission_bps,
             # --- Pass Global Defaults (from CLI args) as Fallbacks ---
-            stop_loss_pct=None, # SL/TP/TSL should always come from grid now
+            stop_loss_pct=None,  # SL/TP/TSL should always come from grid now
             take_profit_pct=None,
             trailing_stop_loss_pct=None,
             apply_atr_filter=global_apply_atr_filter,
@@ -508,7 +527,7 @@ if __name__ == "__main__":
     # Pass the GLOBAL filter defaults from args to run_forward_test
     results = run_forward_test(
         strategy_short_name=args.strategy,
-        param_config_path=args.param_config, # Path to best_params.yaml
+        param_config_path=args.param_config,  # Path to best_params.yaml
         symbol=args.symbol,
         data=forward_data_slice,  # Pass the prepared slice
         trade_units=args.units,

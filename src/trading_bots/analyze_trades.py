@@ -10,7 +10,11 @@ import string  # For filename sanitization
 import os
 
 # Import shared reporting utils
-from .reporting_utils import plot_equity_curve, generate_html_report, plot_rolling_metric
+from .reporting_utils import (
+    plot_equity_curve,
+    generate_html_report,
+    plot_rolling_metric,
+)
 
 # Setup logger
 logging.basicConfig(

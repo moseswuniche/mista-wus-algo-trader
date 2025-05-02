@@ -69,14 +69,20 @@ def plot_rolling_metric(
 
         # Calculate rolling Sharpe (handle division by zero)
         rolling_metric = rolling_mean / rolling_std.replace(0, np.nan)
-        rolling_metric.dropna(inplace=True) # Drop initial NaNs
+        rolling_metric.dropna(inplace=True)  # Drop initial NaNs
 
         if rolling_metric.empty:
-            logger.warning(f"Rolling {metric_name} calculation resulted in empty series. Skipping plot.")
+            logger.warning(
+                f"Rolling {metric_name} calculation resulted in empty series. Skipping plot."
+            )
             return False
 
         fig, ax = plt.subplots(figsize=(12, 6))
-        ax.plot(rolling_metric.index, rolling_metric.values, label=f'Rolling {metric_name} ({window}-trade)')
+        ax.plot(
+            rolling_metric.index,
+            rolling_metric.values,
+            label=f"Rolling {metric_name} ({window}-trade)",
+        )
 
         # Formatting
         ax.set_title(f"{title_prefix}: Rolling {metric_name} Over Trades")
