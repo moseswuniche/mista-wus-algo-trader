@@ -10,7 +10,6 @@ import collections.abc  # Needed for recursive update check
 import math  # Added for calculating combinations
 import string  # Added for filename sanitization
 from multiprocessing import Pool, cpu_count  # Added for parallel backtesting
-from tqdm import tqdm  # Added for progress bar
 import sys
 import inspect  # Added for inspecting strategy __init__ signatures
 from functools import partial  # Added for partial function application
@@ -24,9 +23,6 @@ import logging.handlers
 import time
 import traceback  # For listener error reporting
 import re  # Import re for sanitize_filename if not already imported
-import pyarrow as pa
-import pyarrow.parquet as pq
-import atexit  # <-- IMPORT AEXIT
 
 # Assuming strategies are accessible via this import path
 from .strategies import (
@@ -75,36 +71,9 @@ worker_shared_args: Dict[str, Any] = {}
 WORKER_STRATEGY_MAP: Dict[str, type] = {}  # Map populated in initializer
 # <<< End Worker Globals >>>
 
-# --- Globals for Graceful Shutdown ---
-_parquet_writer_instance: Optional[pq.ParquetWriter] = None
-_details_filepath_global: Optional[Path] = None  # Store path for logging
-_atexit_registered = False
-
-
-def _cleanup_parquet_writer():
-    """atexit handler to ensure the parquet writer is closed.
-    Uses global variables for writer instance and filepath.
-    """
-    global _parquet_writer_instance, _details_filepath_global
-    logger = logging.getLogger(__name__)  # Get logger instance
-    if _parquet_writer_instance is not None:
-        writer_to_close = _parquet_writer_instance
-        filepath = _details_filepath_global or "Unknown Parquet File"
-        _parquet_writer_instance = None  # Clear global ref first
-
-        try:
-            logger.warning(
-                f"Process exiting. Attempting to gracefully close Parquet writer for: {filepath}"
-            )
-            writer_to_close.close()
-            logger.info(f"Successfully closed Parquet writer for: {filepath}")
-        except Exception as e:
-            logger.error(
-                f"Error closing Parquet writer for {filepath} during cleanup: {e}",
-                exc_info=True,
-            )
-
-
+# --- Remove Parquet Globals and Cleanup Function ---
+# (Removed _parquet_writer_instance, _details_filepath_global, _atexit_registered)
+# (Removed _cleanup_parquet_writer function)
 # --- End Globals and Cleanup ---
 
 
@@ -535,6 +504,12 @@ def run_backtest_for_params(
                 f"Worker {multiprocessing.current_process().pid}: run_backtest function returned None or empty metrics for params: {params}"
             )
 
+        # --- Remove detailed trade log BEFORE returning from worker ---
+        if result_metrics and "result_performance_summary" in result_metrics:
+            del result_metrics["result_performance_summary"]
+            logger.debug("Removed result_performance_summary from worker result.")
+        # --- End removal ---
+
         # Return the original params (passed into function) and the results
         return params, result_metrics
 
@@ -552,21 +527,24 @@ def optimize_strategy(
     optimization_metric: str = "cumulative_profit",
     num_processes: int = DEFAULT_OPT_PROCESSES,
     log_queue: Optional[multiprocessing.Queue] = None,
-    # --- New arguments for incremental saving ---
     save_details: bool = False,
     details_filepath: Optional[Path] = None,
-    # --- End new arguments ---
+    # --- New argument for resuming ---
+    completed_param_reps: Optional[set] = None,
+    # --- End new argument ---
 ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
     """
     Optimizes a single strategy for a given symbol using grid search with multiprocessing,
     avoiding redundant backtests for duplicate parameter sets.
-    If save_details is True, writes detailed results incrementally to details_filepath (Parquet).
+    If save_details is True, writes detailed results incrementally to details_filepath (CSV).
+    If completed_param_reps is provided, skips combinations present in the set.
     """
-    global _parquet_writer_instance, _atexit_registered, _details_filepath_global  # Declare usage of globals
+    # Removed global declarations for parquet/atexit
     logger = logging.getLogger(__name__)
     symbol = shared_worker_args["symbol"]
+    completed_param_reps = completed_param_reps or set()  # Ensure it's a set
 
-    # --- Ensure details_filepath exists and Register atexit handler (if needed) ---
+    # --- Ensure details_filepath exists ---
     if save_details:
         if details_filepath is None:
             logger.error("details_filepath must be provided when save_details is True.")
@@ -576,18 +554,9 @@ def optimize_strategy(
             logger.info(
                 f"Detailed results will be saved incrementally to: {details_filepath}"
             )
-            _details_filepath_global = (
-                details_filepath  # Store path for cleanup logging
-            )
-            # Register cleanup only ONCE per script execution
-            if not _atexit_registered:
-                atexit.register(_cleanup_parquet_writer)
-                _atexit_registered = True
-                logger.debug("Registered parquet writer cleanup function with atexit.")
         except Exception as e:
             logger.error(f"Failed to create directory for {details_filepath}: {e}")
             return None, None
-    # --- End setup ---
 
     logger.info(
         f"Starting optimization for Strategy: {strategy_short_name}, Symbol: {symbol}"
@@ -789,6 +758,41 @@ def optimize_strategy(
         )
         return None, None
 
+    # --- Filter unique_params_for_backtest based on completed_param_reps ---
+    if completed_param_reps:
+        initial_unique_count = len(unique_params_for_backtest)
+        params_to_run = []
+        skipped_count = 0
+        for params in unique_params_for_backtest:
+            rep = params_to_tuple_rep(params)
+            if rep not in completed_param_reps:
+                params_to_run.append(params)
+            else:
+                skipped_count += 1
+
+        unique_params_for_backtest = params_to_run  # Replace with the filtered list
+        unique_combinations_count = len(unique_params_for_backtest)  # Update count
+        logger.info(
+            f"Resume: Skipped {skipped_count} already completed parameters found in details file."
+        )
+        logger.info(f"Resume: {unique_combinations_count} parameters remaining to run.")
+    # --- End filtering ---
+
+    # Check if there's anything left to run
+    if unique_combinations_count == 0:
+        logger.warning(
+            f"No parameter combinations left to run for {strategy_short_name} on {symbol} (either none generated or all were previously completed). Skipping backtesting."
+        )
+        # Need to handle finding the best result from the *existing* file if resuming
+        if completed_param_reps:
+            logger.info(
+                f"Attempting to find best result from existing file: {details_filepath}"
+            )
+            # Add logic here to read the full existing file and find the best based on the metric
+            # This is complex, might be better to just return None, None and let a separate script analyze results
+            pass  # Placeholder - For now, just finishes without running pool
+        return None, None  # Return None if nothing to run
+
     # Determine number of processes to use
     available_cpus = cpu_count()
     if num_processes > available_cpus:
@@ -803,7 +807,10 @@ def optimize_strategy(
         logger.info(f"Using specified number of processes: {num_processes}")
 
     # --- Run Backtests for Unique Combinations in Parallel ---
-    unique_results_list = []
+    # <<< ADDED Type Annotation >>>
+    unique_results_list: List[
+        Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]
+    ] = []
     logger.info(
         f"Starting parallel backtesting for {unique_combinations_count} unique combinations using {num_processes} processes..."
     )
@@ -837,199 +844,284 @@ def optimize_strategy(
             initargs=initializer_args,  # type: ignore[arg-type]
         ) as pool:
 
-            logger.info("Submitting tasks to pool using map...")
-            # pool.map takes the function and the iterable directly
-            # --- ADDED MARKER ---
+            logger.info(
+                "Submitting tasks and processing results with imap_unordered..."
+            )
+            # unique_results_list = pool.map(run_backtest_for_params, unique_params_for_backtest)
+            # logger.info(f"Collected {len(unique_results_list)} results from pool using map.")
+
+            # <<< USE imap_unordered to process results as they complete >>>
             logger.critical(
                 f"--- SUBMITTING {len(unique_params_for_backtest)} UNIQUE TASKS TO POOL NOW ---"
             )
             # --- END ADDED MARKER ---
-            unique_results_list = pool.map(
+            imap_results = pool.imap_unordered(
                 run_backtest_for_params, unique_params_for_backtest
             )
-            logger.info(
-                f"Collected {len(unique_results_list)} results from pool using map."
-            )
 
-            # Note: pool.map blocks until all tasks complete, so close/join is slightly redundant here
-            # but doesn't hurt.
-        logger.info("Parallel backtesting finished.")
+            # Process results iteratively
+            processed_unique_count = 0  # Counter for results processed from iterator
+            successful_unique_count = 0  # <-- INITIALIZE COUNTER
+            total_results_to_process = (
+                unique_combinations_count  # Total expected results
+            )
+            results_log_interval = max(
+                1, total_results_to_process // 20
+            )  # Log ~20 times
+
+            # <<< ADDED INITIALIZATION FOR BEST RESULT TRACKING >>>
+            minimize_metric = optimization_metric in [
+                "max_drawdown"
+            ]  # Add other metrics to minimize here
+            best_metric_value = float("inf") if minimize_metric else float("-inf")
+            best_params = None
+            best_metrics_dict = None
+            # <<< END INITIALIZATION >>>
+
+            # --- Define Desired Result Columns for CSV Output ---
+            # List the keys from the result_metrics dict that should be saved.
+            # Excludes complex types like Series (sharpe_ratio_ts) or DataFrames (result_performance_summary)
+            DESIRED_RESULT_METRICS = [
+                # Core Performance
+                "cumulative_profit",
+                "cumulative_profit_pct",
+                "sharpe_ratio",
+                "sortino_ratio",
+                "profit_factor",
+                "max_drawdown_pct",
+                "max_drawdown_abs",
+                "longest_drawdown_duration",
+                "max_consecutive_wins",
+                "max_consecutive_losses",
+                # Trade Stats
+                "total_trades",
+                "winning_trades",
+                "losing_trades",
+                "win_rate",
+                "average_trade_pnl",
+                "average_winning_trade",
+                "average_losing_trade",
+                # Optional: Add other relevant scalar metrics returned by run_backtest
+            ]
+            # --- End Desired Columns Definition ---
+
+            # --- Initialize for Incremental CSV Saving (if enabled) ---
+            results_batch: List[Dict[str, Any]] = []
+            # Removed parquet_writer
+            BATCH_SIZE = 1  # <-- CHANGED BATCH SIZE TO 5000
+            # Removed pyarrow_available check and import block
+            # --- End Initialization ---
+
+            # <<< ITERATE OVER IMAP RESULTS >>>
+            for result_params, result_metrics in imap_results:
+                processed_unique_count += 1
+
+                # Log progress periodically
+                if (processed_unique_count % results_log_interval == 0) or (
+                    processed_unique_count == total_results_to_process
+                ):
+                    progress_message = f"Processing results progress for {strategy_short_name}/{symbol}: {processed_unique_count}/{total_results_to_process}   "  # Add padding
+                    print(
+                        progress_message, end="\r", file=sys.stderr, flush=True
+                    )  # Print to stderr, overwrite line
+
+                # --- Process the result (same logic as before) ---
+                if result_params is not None and result_metrics is not None:
+                    successful_unique_count += 1  # Moved counter here
+
+                    # Remove Sharpe Ratio Time Series (remains)
+                    removed_ts = result_metrics.pop(
+                        "sharpe_ratio_ts", None
+                    )  # Use pop with default None
+                    if removed_ts is not None:
+                        logger.debug(
+                            "Removed sharpe_ratio_ts from result metrics before saving details."
+                        )
+
+                    # --- Incremental CSV Saving Logic ---
+                    if save_details:
+                        # Combine params and results into a single dictionary for saving details
+                        detail_entry = {
+                            f"param_{k}": v for k, v in result_params.items()
+                        }
+                        detail_entry.update(
+                            {f"result_{k}": v for k, v in result_metrics.items()}
+                        )
+                        results_batch.append(detail_entry)
+
+                        if len(results_batch) >= BATCH_SIZE:
+                            try:
+                                # Convert results list to DataFrame for batch writing
+                                details_df = pd.DataFrame(results_batch)
+
+                                # --- FILTERING: Select only desired columns before CSV write ---
+                                param_cols = [
+                                    c
+                                    for c in details_df.columns
+                                    if c.startswith("param_")
+                                ]
+                                result_cols = [
+                                    f"result_{m}" for m in DESIRED_RESULT_METRICS
+                                ]
+                                # Ensure desired columns exist, fill with NaN if missing in this batch
+                                desired_cols = param_cols + result_cols
+                                # Use reindex to select/order columns and handle missing ones gracefully
+                                df_to_save = details_df.reindex(columns=desired_cols)
+                                # --- END FILTERING ---
+
+                                # Determine if header should be written
+                                # <<< ADDED Check for None >>>
+                                write_header = True  # Default to writing header
+                                if details_filepath is not None:
+                                    write_header = (
+                                        not details_filepath.exists()
+                                        or details_filepath.stat().st_size == 0
+                                    )
+                                else:
+                                    # This case should ideally not be reached if save_details is True,
+                                    # but handles the theoretical possibility for mypy.
+                                    logger.error(
+                                        "Details filepath is None unexpectedly during batch write."
+                                    )
+                                    # Optionally skip saving this batch or raise an error
+                                    continue  # Skip to next result if path is None
+                                # <<< END Check for None >>>
+
+                                # Append to CSV
+                                df_to_save.to_csv(
+                                    details_filepath,
+                                    mode="a",
+                                    header=write_header,
+                                    index=False,
+                                )
+
+                                results_batch.clear()
+                                logger.debug(
+                                    f"Wrote batch of {len(details_df)} results to CSV: {details_filepath}"
+                                )
+                            except Exception as e:
+                                logger.error(
+                                    f"Error writing batch to CSV file {details_filepath}: {e}"
+                                )
+                                # Consider whether to stop saving on error
+                                # save_details = False # Optional: stop trying to save if it fails once
+                    # --- End Incremental CSV Saving ---
+
+                    # Update Best Result (logic unchanged)
+                    current_metric_value = result_metrics.get(optimization_metric)
+                    if current_metric_value is not None:
+                        is_initial_best = best_metric_value == float(
+                            "inf"
+                        ) or best_metric_value == -float("inf")
+                        is_better = False
+                        if pd.notna(current_metric_value):
+                            if is_initial_best:
+                                is_better = True
+                            elif (
+                                minimize_metric
+                                and current_metric_value < best_metric_value
+                            ):
+                                is_better = True
+                            elif (
+                                not minimize_metric
+                                and current_metric_value > best_metric_value
+                            ):
+                                is_better = True
+                        else:
+                            logger.debug(
+                                f"Metric '{optimization_metric}' has invalid value ({current_metric_value}) for params: {result_params}. Cannot compare."
+                            )
+
+                        if is_better:
+                            best_metric_value = current_metric_value
+                            best_params = result_params  # Store the params dict
+                            best_metrics_dict = (
+                                result_metrics  # Store the full metrics dict
+                            )
+                            logger.info(
+                                f"New best {optimization_metric} found: {best_metric_value:.4f} with params: {adjust_params_for_printing(best_params, strategy_class_name)}"
+                            )
+                else:
+                    # Handle None results from workers (errors)
+                    logger.warning(
+                        f"A backtest worker task completed but returned None (likely an error during execution). Skipping result."
+                    )
+            # <<< END ITERATION OVER IMAP RESULTS >>>
+
+            # Final progress update to ensure 100% is shown
+            if total_results_to_process > 0:
+                progress_message = f"Processing results progress for {strategy_short_name}/{symbol}: {processed_unique_count}/{total_results_to_process}   "
+                print(progress_message, end="\r", file=sys.stderr, flush=True)
+
+            # Move print newline here, after progress updates are definitely finished
+            if total_results_to_process > 0:
+                print(file=sys.stderr)
+
+        logger.info(
+            "Parallel backtesting finished."
+        )  # Log can remain here or move earlier
     except Exception as e:
         logger.exception(f"Error during parallel backtesting: {e}", exc_info=True)
         return None, None
 
-    # --- Process Unique Results and Find Best ---
-    best_params: Optional[Dict[str, Any]] = None
-    minimize_metric = optimization_metric in [
-        "max_drawdown"
-    ]  # Add other minimizing metrics if needed
-    best_metric_value: Optional[float] = (
-        float("inf") if minimize_metric else -float("inf")
-    )
-    best_metrics_dict: Optional[Dict[str, Any]] = (
-        None  # Store the full metrics dict for the best result
-    )
-
-    processed_unique_count = 0
-    successful_unique_count = 0
-
-    logger.info(
-        f"Processing {len(unique_results_list)} unique results returned by workers..."
-    )
-
-    # Initialize for Incremental Saving (if enabled)
-    results_batch: List[Dict[str, Any]] = []
-    parquet_schema: Optional[pa.Schema] = None
-    BATCH_SIZE = 10000
-    pyarrow_available = True
-    if save_details:
+    # --- Write Final CSV Batch (if any) ---
+    if save_details and results_batch:
         try:
-            import pyarrow as pa
-            import pyarrow.parquet as pq
-        except ImportError:
-            logger.warning(
-                "'pyarrow' package not found. Cannot save detailed results incrementally to Parquet."
-            )
-            pyarrow_available = False
-            save_details = False
-    # --- End Initialization ---
+            # Convert final results list to DataFrame
+            details_df = pd.DataFrame(results_batch)
 
-    # Iterate directly over the list of unique results from the pool
-    for idx, (result_params, result_metrics) in enumerate(unique_results_list):
-        processed_unique_count += 1
+            # --- FILTERING: Select only desired columns before final CSV write ---
+            param_cols = [c for c in details_df.columns if c.startswith("param_")]
+            result_cols = [f"result_{m}" for m in DESIRED_RESULT_METRICS]
+            desired_cols = param_cols + result_cols
+            # Use reindex to select/order columns and handle missing ones gracefully
+            df_to_save = details_df.reindex(columns=desired_cols)
+            # --- END FILTERING ---
 
-        if result_params is not None and result_metrics is not None:
-            successful_unique_count += 1
-
-            # --- Remove Sharpe Ratio Time Series (remains) ---
-            removed_ts = result_metrics.pop(
-                "sharpe_ratio_ts", None
-            )  # Use pop with default None
-            if removed_ts is not None:
-                logger.debug(
-                    "Removed sharpe_ratio_ts from result metrics before saving details."
+            # Determine if header should be written
+            # <<< ADDED Check for None >>>
+            write_header = True  # Default to writing header
+            if details_filepath is not None:
+                write_header = (
+                    not details_filepath.exists()
+                    or details_filepath.stat().st_size == 0
                 )
-            # --- End Removal ---
-
-            # --- Incremental Saving Logic ---
-            if save_details and pyarrow_available:
-                # Combine params and results into a single dictionary for saving details
-                detail_entry = {f"param_{k}": v for k, v in result_params.items()}
-                detail_entry.update(
-                    {f"result_{k}": v for k, v in result_metrics.items()}
+            else:
+                # This case should ideally not be reached if save_details is True,
+                # but handles the theoretical possibility for mypy.
+                logger.error(
+                    "Details filepath is None unexpectedly during final batch write."
                 )
-                results_batch.append(detail_entry)
+                # Skip saving if path is None
+                return best_params, best_metrics_dict  # Or raise error
+            # <<< END Check for None >>>
 
-                if len(results_batch) >= BATCH_SIZE:
-                    try:
-                        df_batch = pd.DataFrame(results_batch)
-                        table_batch = pa.Table.from_pandas(
-                            df_batch, schema=parquet_schema, preserve_index=False
-                        )
-                        # --- Use global writer instance ---
-                        if _parquet_writer_instance is None:  # First write
-                            parquet_schema = table_batch.schema
-                            # Assign to global instance
-                            _parquet_writer_instance = pq.ParquetWriter(
-                                details_filepath, parquet_schema
-                            )
-                            logger.info(
-                                f"Opened Parquet writer for: {details_filepath}"
-                            )
-                        _parquet_writer_instance.write_table(table_batch)
-                        # --- End use global writer ---
-                        results_batch.clear()
-                        logger.debug(f"Wrote batch of {BATCH_SIZE} results to parquet.")
-                    except Exception as e:
-                        logger.error(
-                            f"Error writing batch to Parquet file {details_filepath}: {e}"
-                        )
-                        save_details = False
-                        if _parquet_writer_instance:  # Close global instance on error
-                            _parquet_writer_instance.close()
-                            _parquet_writer_instance = None
-                            logger.warning(
-                                f"Closed parquet writer for {details_filepath} due to write error."
-                            )
-            # --- End Incremental Saving Logic ---
-
-            # --- Update Best Result (Processing each unique result once) ---
-            current_metric_value = result_metrics.get(optimization_metric)
-            if current_metric_value is not None:
-                is_initial_best = best_metric_value == float(
-                    "inf"
-                ) or best_metric_value == -float("inf")
-                is_better = False
-                if pd.notna(current_metric_value):
-                    if is_initial_best:
-                        is_better = True
-                    elif minimize_metric and current_metric_value < best_metric_value:
-                        is_better = True
-                    elif (
-                        not minimize_metric and current_metric_value > best_metric_value
-                    ):
-                        is_better = True
-                else:
-                    logger.debug(
-                        f"Metric '{optimization_metric}' has invalid value ({current_metric_value}) for params: {result_params}. Cannot compare."
-                    )
-
-                if is_better:
-                    best_metric_value = current_metric_value
-                    best_params = result_params  # Store the params dict
-                    best_metrics_dict = result_metrics  # Store the full metrics dict
-                    # Log when a *new* best is found (can keep this debug log)
-                    logger.info(
-                        f"New best {optimization_metric} found: {best_metric_value:.4f} with params: {adjust_params_for_printing(best_params, strategy_class_name)}"
-                    )
-        else:
-            # Log workers that returned None (error during backtest)
-            # We don't have the params that failed easily here unless we modify run_backtest_for_params return value on error
-            logger.warning(
-                f"A backtest worker task completed but returned None (likely an error during execution). Skipping result."
+            # Append final batch to CSV
+            df_to_save.to_csv(
+                details_filepath, mode="a", header=write_header, index=False
             )
 
-    # --- Write Final Batch (if any) ---
-    if save_details and pyarrow_available and results_batch:
-        try:
-            df_batch = pd.DataFrame(results_batch)
-            table_batch = pa.Table.from_pandas(
-                df_batch, schema=parquet_schema, preserve_index=False
-            )
-            # --- Use global writer instance ---
-            if (
-                _parquet_writer_instance is None
-            ):  # Handle case where total results < BATCH_SIZE
-                parquet_schema = table_batch.schema
-                _parquet_writer_instance = pq.ParquetWriter(
-                    details_filepath, parquet_schema
-                )
-                logger.info(f"Opened Parquet writer for: {details_filepath}")
-            _parquet_writer_instance.write_table(table_batch)
-            # --- End use global writer ---
             logger.debug(
-                f"Wrote final batch of {len(results_batch)} results to parquet."
+                f"Wrote final batch of {len(details_df)} results to CSV: {details_filepath}"
             )
         except Exception as e:
             logger.error(
-                f"Error writing final batch to Parquet file {details_filepath}: {e}"
+                f"Error writing final batch to CSV file {details_filepath}: {e}"
             )
-            if _parquet_writer_instance:  # Close global instance on error
-                _parquet_writer_instance.close()
-                _parquet_writer_instance = None
-                logger.warning(
-                    f"Closed parquet writer for {details_filepath} due to write error."
-                )
-    # --- End Final Batch ---
+    # --- End Final CSV Batch ---
 
-    # Final Summary Log
-    logger.info(f"Finished processing results for {strategy_class_name} on {symbol}.")
-    logger.info(f"  Processed {processed_unique_count} unique worker results.")
-    logger.info(f"  Found {successful_unique_count} successful backtest results.")
+    # Final Summary Log (remains the same, but now reflects incrementally processed results)
+    logger.info(f"Finished processing results for {strategy_short_name} on {symbol}.")
+    logger.info(
+        f"  Processed {processed_unique_count} worker results."
+    )  # Use counter from loop
+    logger.info(
+        f"  Found {successful_unique_count} successful backtest results."
+    )  # Use counter from loop
 
     if best_params is None:
         logger.warning(
-            f"No best parameters found for {strategy_class_name} on {symbol}. No successful backtests or specified metric '{optimization_metric}' not found?"
+            f"No best parameters found for {strategy_short_name} on {symbol}. No successful backtests or specified metric '{optimization_metric}' not found?"
         )
         # Return empty best_metrics if no best_params found
         return None, None
@@ -1046,7 +1138,7 @@ def optimize_strategy(
         )
 
     logger.info(
-        f"Best parameters found for {strategy_class_name} on {symbol}: "
+        f"Best parameters found for {strategy_short_name} on {symbol}: "
         f"{adjust_params_for_printing(best_params, strategy_class_name)} "
         f"with {optimization_metric} = {final_best_metric_value_str}"
     )
@@ -1242,6 +1334,11 @@ def main():
 
     # --- Other Arguments ---
     parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume optimization, skipping completed parameters found in existing details file.",
+    )
+    parser.add_argument(
         "--log",
         type=str,
         default="INFO",
@@ -1333,37 +1430,70 @@ def main():
             )
         # --- End ATR Calculation ---
 
-        # --- Determine Details Filename (Moved Here) ---
+        # --- Determine Details Filename (CSV) ---
         details_filepath = None
         if args.save_details:
             try:
+                details_dir = Path("results/optimize/details")
+                details_dir.mkdir(parents=True, exist_ok=True)
+
+                # --- Calculate common parts for filename pattern/generation ---
+                base_name = f"{args.strategy}_{args.symbol}"
+                filter_suffix = ""
+                if args.apply_atr_filter:
+                    filter_suffix += f"_atr{args.atr_filter_period}x{args.atr_filter_multiplier:.1f}sma{args.atr_filter_sma_period}"
+                if args.apply_seasonality_filter:
+                    filter_suffix += (
+                        f"_season{args.allowed_trading_hours_utc.replace('-','')}"
+                    )
+                    if args.apply_seasonality_to_symbols:
+                        syms = args.apply_seasonality_to_symbols.split(",")
+                        filter_suffix += f"_{''.join(s[:3] for s in syms)}"
+                filter_suffix = sanitize_filename(filter_suffix)
+                # --- End common parts ---
+
                 if args.details_file is None:
-                    details_dir = Path("results/optimize/details")  # Changed dir name
-                    details_dir.mkdir(parents=True, exist_ok=True)
-                    filename_ts = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
-                    base_name = f"{args.strategy}_{args.symbol}"
-                    filter_suffix = ""
-                    if args.apply_atr_filter:
-                        filter_suffix += f"_atr{args.atr_filter_period}x{args.atr_filter_multiplier:.1f}sma{args.atr_filter_sma_period}"
-                    if args.apply_seasonality_filter:
-                        filter_suffix += (
-                            f"_season{args.allowed_trading_hours_utc.replace('-','')}"
-                        )
-                        if args.apply_seasonality_to_symbols:
-                            syms = args.apply_seasonality_to_symbols.split(",")
-                            filter_suffix += f"_{''.join(s[:3] for s in syms)}"
-                    filter_suffix = sanitize_filename(filter_suffix)
-                    filename = f"{base_name}{filter_suffix}_optimize_details_{filename_ts}.parquet"
-                    details_filepath = details_dir / filename
+                    # --- Auto-determine filename (Resume-aware) ---
+                    filename_pattern = (
+                        f"{base_name}{filter_suffix}_optimize_details_*.csv"
+                    )
+
+                    if args.resume:
+                        # Find the latest existing file matching the pattern
+                        existing_files = list(details_dir.glob(filename_pattern))
+                        if existing_files:
+                            latest_file = max(
+                                existing_files, key=lambda p: p.stat().st_mtime
+                            )
+                            details_filepath = latest_file
+                            logger.info(
+                                f"Resume flag set: Found latest details file to append/resume from: {details_filepath}"
+                            )
+                        else:
+                            # No existing file found, generate a new one for this run
+                            logger.warning(
+                                f"Resume flag set but no existing details file found matching pattern '{filename_pattern}' in {details_dir}. Starting a new details file."
+                            )
+                            filename_ts = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+                            filename = f"{base_name}{filter_suffix}_optimize_details_{filename_ts}.csv"
+                            details_filepath = details_dir / filename
+                    else:
+                        # Not resuming, generate a new filename with timestamp
+                        filename_ts = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+                        filename = f"{base_name}{filter_suffix}_optimize_details_{filename_ts}.csv"
+                        details_filepath = details_dir / filename
+                    # --- End Auto-determine filename ---
                 else:
+                    # Use the explicitly provided filename
                     details_filepath = Path(args.details_file)
-                    # Ensure suffix is .parquet if custom name given?
-                    if details_filepath.suffix.lower() != ".parquet":
+                    if details_filepath.suffix.lower() != ".csv":
                         logger.warning(
-                            f"Custom details file '{details_filepath}' does not end with .parquet. Appending suffix."
+                            f"Custom details file '{details_filepath}' does not end with .csv. Changing suffix."
                         )
-                        details_filepath = details_filepath.with_suffix(".parquet")
+                        details_filepath = details_filepath.with_suffix(".csv")
+                    # Ensure parent directory exists even for explicit path
                     details_filepath.parent.mkdir(parents=True, exist_ok=True)
+
             except Exception as e:
                 logger.error(
                     f"Failed to determine or create directory for details file: {e}"
@@ -1371,6 +1501,98 @@ def main():
                 args.save_details = False  # Disable saving if path fails
                 details_filepath = None
         # --- End Determine Details Filename ---
+
+        # --- Load Completed Params if Resuming (from CSV) ---
+        completed_param_reps = set()
+        if (
+            args.resume
+            and args.save_details
+            and details_filepath
+            and details_filepath.is_file()
+        ):
+            logger.info(
+                f"Resume flag set. Attempting to load completed parameters from: {details_filepath}"
+            )
+            try:
+                # Read the existing CSV file
+                # Use low_memory=False to potentially avoid dtype warnings with mixed types
+                df_completed = pd.read_csv(details_filepath, low_memory=False)
+
+                if not df_completed.empty:
+                    # Identify parameter columns (those starting with 'param_')
+                    param_cols = [
+                        col for col in df_completed.columns if col.startswith("param_")
+                    ]
+                    if not param_cols:
+                        logger.warning(
+                            f"No columns starting with 'param_' found in {details_filepath}. Cannot determine completed parameters."
+                        )
+                    else:
+                        df_params_only = df_completed[
+                            param_cols
+                        ].copy()  # Work on a copy
+                        # Remove 'param_' prefix
+                        df_params_only.columns = [
+                            col.replace("param_", "", 1) for col in param_cols
+                        ]
+
+                        # Convert each row to dict and then to tuple representation
+                        # Important: Convert dtypes after loading CSV as needed
+                        for _, row in df_params_only.iterrows():
+                            params_dict = row.to_dict()
+                            # Attempt to infer original types (this can be tricky with CSV)
+                            processed_params = {}
+                            for k, v in params_dict.items():
+                                if pd.isna(v) or str(v).lower() == "none":
+                                    processed_params[k] = None
+                                else:
+                                    try:
+                                        # Try converting to int, then float, else keep as string/bool
+                                        processed_params[k] = int(v)
+                                    except (ValueError, TypeError):
+                                        try:
+                                            processed_params[k] = float(v)
+                                        except (ValueError, TypeError):
+                                            if isinstance(v, str):
+                                                if v.lower() == "true":
+                                                    processed_params[k] = True
+                                                elif v.lower() == "false":
+                                                    processed_params[k] = False
+                                                else:
+                                                    processed_params[k] = (
+                                                        v  # Keep as string if other conversions fail
+                                                    )
+                                            else:
+                                                processed_params[k] = (
+                                                    v  # Keep original type if not string
+                                                )
+
+                            rep = params_to_tuple_rep(
+                                processed_params
+                            )  # Convert to hashable representation
+                            completed_param_reps.add(rep)
+                        logger.info(
+                            f"Successfully loaded and processed {len(completed_param_reps)} completed parameter sets from CSV to skip."
+                        )
+                else:
+                    logger.info(
+                        f"Existing CSV details file found but is empty. Starting fresh."
+                    )
+            except pd.errors.EmptyDataError:
+                logger.info(
+                    f"Existing CSV details file {details_filepath} is empty. Starting fresh."
+                )
+            except FileNotFoundError:
+                logger.warning(
+                    f"Resume specified, but details file {details_filepath} not found. Starting fresh."
+                )
+            except Exception as e:
+                logger.error(
+                    f"Error reading or processing existing CSV details file {details_filepath} for resume: {e}. Optimization will run all parameters.",
+                    exc_info=True,
+                )
+                completed_param_reps = set()  # Reset on error
+        # --- End Load Completed Params ---
 
         shared_worker_args = {
             "symbol": args.symbol,
@@ -1402,6 +1624,8 @@ def main():
             # Pass new arguments for incremental saving
             save_details=args.save_details,
             details_filepath=details_filepath,
+            # Pass new argument for resuming
+            completed_param_reps=completed_param_reps,
         )
         # --- End Call ---
 
@@ -1475,37 +1699,4 @@ if __name__ == "__main__":
 #         # test_data = ... # Slice full_data
 #
 #         # logger.info(f"Walk-Forward Window {i+1}/{num_windows}: Optimizing on Train Data...")
-#         # best_train_params, _, _ = optimize_strategy(
-#         #     strategy_short_name=strategy_short_name,
-#         #     config_path=config_path,
-#         #     symbol=symbol,
-#         #     data=train_data,
-#         #     trade_units=trade_units,
-#         #     optimization_metric=optimization_metric,
-#         #     # ... pass other necessary args ...
-#         # )
-#
-#         # if best_train_params:
-#         #     logger.info(f"Window {i+1}: Best Train Params Found: {best_train_params}")
-#         #     best_params_sequence.append(best_train_params)
-#
-#         #     logger.info(f"Window {i+1}: Running Backtest on Test Data with Best Train Params...")
-#         #     strategy_class = STRATEGY_MAP[strategy_short_name]
-#         #     strategy_instance = strategy_class(**best_train_params) # Assuming best_params is ready for init
-#         #     test_result = run_backtest(
-#         #         data=test_data,
-#         #         strategy=strategy_instance,
-#         #         symbol=symbol,
-#         #         units=trade_units,
-#         #         # ... pass other necessary args including SL/TP/TSL from best_train_params ...
-#         #     )
-#         #     all_test_results.append({"window": i+1, "params": best_train_params, "results": test_result})
-#         # else:
-#         #     logger.warning(f"Window {i+1}: No best parameters found during training optimization.")
-#
-#     # --- Aggregate Results --- #
-#     # Combine performance summaries, recalculate overall metrics, etc.
-#     logger.info("Walk-Forward Optimization Complete. Aggregating results...")
-#     # aggregated_results = ...
-#     # return aggregated_results, best_params_sequence
-#     return None, None, [] # Placeholder return
+#         # best_train_params, _, _ = optimize_strategy(\n#         #     strategy_short_name=strategy_short_name,\n#         #     config_path=config_path,\n#         #     symbol=symbol,\n#         #     data=train_data,\n#         #     trade_units=trade_units,\n#         #     optimization_metric=optimization_metric,\n#         #     # ... pass other necessary args ...\n#         # )\n#\n#         # if best_train_params:\n#         #     logger.info(f"Window {i+1}: Best Train Params Found: {best_train_params}")\n#         #     best_params_sequence.append(best_train_params)\n#\n#         #     logger.info(f"Window {i+1}: Running Backtest on Test Data with Best Train Params...")\n#         #     strategy_class = STRATEGY_MAP[strategy_short_name]\n#         #     strategy_instance = strategy_class(**best_train_params) # Assuming best_params is ready for init\n#         #     test_result = run_backtest(\n#         #         data=test_data,\n#         #         strategy=strategy_instance,\n#         #         symbol=symbol,\n#         #         units=trade_units,\n#         #         # ... pass other necessary args including SL/TP/TSL from best_train_params ...\n#         #     )\n#         #     all_test_results.append({"window": i+1, "params": best_train_params, "results": test_result})\n#         # else:\n#         #     logger.warning(f"Window {i+1}: No best parameters found during training optimization.")\n#\n#     # --- Aggregate Results --- #\n#     # Combine performance summaries, recalculate overall metrics, etc.\n#     logger.info("Walk-Forward Optimization Complete. Aggregating results...")\n#     # aggregated_results = ...\n#     # return aggregated_results, best_params_sequence\n#     return None, None, [] # Placeholder return
