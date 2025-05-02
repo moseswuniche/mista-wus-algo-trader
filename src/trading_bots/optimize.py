@@ -269,6 +269,7 @@ def params_to_tuple_rep(params: Dict[str, Any], precision: int = 8) -> tuple:
                         rounded_list_elements.append(rounded_elem)
                     else:
                         rounded_list_elements.append(elem)
+                # Correctly indented items.append block inside the try block
                 items.append(
                     (
                         k,
@@ -672,7 +673,7 @@ def optimize_strategy(
                 total_possible_combinations *= len(value_list)
         except Exception as e:
             logger.error(f"Error calculating total combinations: {e}", exc_info=True)
-            total_possible_combinations = 0  # Indicate calculation error
+            total_possible_combinations = 0  # Fixed indentation
     else:
         total_possible_combinations = 0
     logger.info(
@@ -713,11 +714,14 @@ def optimize_strategy(
         # Create the hashable representation for deduplication
         rep = params_to_tuple_rep(params, precision=8)  # Use desired precision
 
-        # --- DEBUG LOGGING ---
+        # --- DEBUG LOGGING ---\
+        # <<< Log first few generated reps >>>
+        if i < 5:
+            logger.debug(f"Generated Param Set [{i}]: Params={repr(params)}, Rep={rep}")
         # Log the params dict and its representation periodically
         log_interval = max(1, total_possible_combinations // 100)  # Log ~100 times
-        if i < 20 or i % log_interval == 0:
-            logger.debug(f"Dedupe Check [{i}]: Params={repr(params)}, Rep={rep}")
+        # if i < 20 or i % log_interval == 0: # Keep this line if you still want periodic logging
+        #     logger.debug(f"Dedupe Check [{i}]: Params={repr(params)}, Rep={rep}")
         # --- END DEBUG LOGGING ---
 
         # Store the rep and params dict if the rep hasn't been seen
@@ -743,14 +747,13 @@ def optimize_strategy(
         logger.info(f"  ({duplicate_count} duplicate combinations ignored)")
 
     # DEBUG: Log a sample of the unique list before submitting jobs
-    if unique_params_for_backtest:
+    logger.debug(
+        f"Sample of unique_params_for_backtest[0]: {unique_params_for_backtest[0]}"
+    )
+    if len(unique_params_for_backtest) > 1:
         logger.debug(
-            f"Sample of unique_params_for_backtest[0]: {unique_params_for_backtest[0]}"
+            f"Sample of unique_params_for_backtest[1]: {unique_params_for_backtest[1]}"
         )
-        if len(unique_params_for_backtest) > 1:
-            logger.debug(
-                f"Sample of unique_params_for_backtest[1]: {unique_params_for_backtest[1]}"
-            )
 
     if unique_combinations_count == 0 and total_possible_combinations > 0:
         logger.error(
@@ -763,12 +766,16 @@ def optimize_strategy(
         initial_unique_count = len(unique_params_for_backtest)
         params_to_run = []
         skipped_count = 0
-        for params in unique_params_for_backtest:
+        logger.debug(f"--- Starting Check: Comparing {len(unique_params_for_backtest)} generated params against {len(completed_param_reps)} loaded reps ---")
+        for i, params in enumerate(unique_params_for_backtest): # Added enumerate for index i
             rep = params_to_tuple_rep(params)
-            if rep not in completed_param_reps:
-                params_to_run.append(params)
-            else:
+            found_in_completed = rep in completed_param_reps
+            if found_in_completed:
                 skipped_count += 1
+                # REMOVED logger.debug(f"Gen Check [{i}]: Params={repr(params)}, Rep={rep}, FoundInCompleted={found_in_completed}")
+            else:
+                params_to_run.append(params)
+        logger.debug(f"--- Finished Check: Total Skipped={skipped_count} ---")
 
         unique_params_for_backtest = params_to_run  # Replace with the filtered list
         unique_combinations_count = len(unique_params_for_backtest)  # Update count
@@ -781,7 +788,7 @@ def optimize_strategy(
     # Check if there's anything left to run
     if unique_combinations_count == 0:
         logger.warning(
-            f"No parameter combinations left to run for {strategy_short_name} on {symbol} (either none generated or all were previously completed). Skipping backtesting."
+            f"No parameter combinations left to run for {strategy_class_name} on {symbol} (either none generated or all were previously completed). Skipping backtesting."
         )
         # Need to handle finding the best result from the *existing* file if resuming
         if completed_param_reps:
@@ -914,6 +921,7 @@ def optimize_strategy(
 
             # <<< ITERATE OVER IMAP RESULTS >>>
             for result_params, result_metrics in imap_results:
+                # Indented loop body
                 processed_unique_count += 1
 
                 # Log progress periodically
@@ -984,7 +992,7 @@ def optimize_strategy(
                                         "Details filepath is None unexpectedly during batch write."
                                     )
                                     # Optionally skip saving this batch or raise an error
-                                    continue  # Skip to next result if path is None
+                                    continue  # Make sure this is indented under the else
                                 # <<< END Check for None >>>
 
                                 # Append to CSV
@@ -1121,7 +1129,7 @@ def optimize_strategy(
 
     if best_params is None:
         logger.warning(
-            f"No best parameters found for {strategy_short_name} on {symbol}. No successful backtests or specified metric '{optimization_metric}' not found?"
+            f"No best parameters found for {strategy_class_name} on {symbol}. No successful backtests or specified metric '{optimization_metric}' not found?"
         )
         # Return empty best_metrics if no best_params found
         return None, None
@@ -1138,7 +1146,7 @@ def optimize_strategy(
         )
 
     logger.info(
-        f"Best parameters found for {strategy_short_name} on {symbol}: "
+        f"Best parameters found for {strategy_class_name} on {symbol}: "
         f"{adjust_params_for_printing(best_params, strategy_class_name)} "
         f"with {optimization_metric} = {final_best_metric_value_str}"
     )
@@ -1502,6 +1510,42 @@ def main():
                 details_filepath = None
         # --- End Determine Details Filename ---
 
+        # --- Load Param Grid AGAIN in Main for Type Checking during CSV Load --- MOVED UP ---
+        # NOTE: This duplicates loading from optimize_strategy, but is needed here
+        #       to correctly infer types from the source grid when resuming.
+        #       Could be refactored later to load grid once and pass it around.
+        source_param_grid_for_types = {} # Initialize as empty dict
+        try:
+            config_file = Path(args.config)
+            if not config_file.is_file():
+                raise FileNotFoundError(f"Parameter config file not found: {args.config}")
+            with open(config_file, "r") as f:
+                full_config = yaml.safe_load(f)
+            if not isinstance(full_config, dict) or args.symbol not in full_config:
+                raise ValueError(f"Symbol '{args.symbol}' not found in config: {args.config}")
+            symbol_config = full_config[args.symbol]
+            strategy_class = STRATEGY_MAP[args.strategy]
+            strategy_class_name = strategy_class.__name__
+            if not isinstance(symbol_config, dict) or strategy_class_name not in symbol_config:
+                raise ValueError(f"Strategy '{strategy_class_name}' not found for symbol '{args.symbol}' in {args.config}")
+            
+            # Get the specific grid for this strategy/symbol
+            # We only need it for type reference, no need to process/sort/dedupe here
+            grid_from_config = symbol_config[strategy_class_name]
+            if not isinstance(grid_from_config, dict):
+                raise ValueError(f"Param grid for {args.symbol}/{strategy_class_name} is not a dict.")
+            source_param_grid_for_types = grid_from_config # Assign the loaded grid
+            logger.debug(f"Successfully loaded source param grid for type checking: {list(source_param_grid_for_types.keys())}")
+
+        except (FileNotFoundError, ValueError) as e:
+            logger.error(f"Failed to load source param grid for type checking: {e}")
+            # If we can't load the grid, we can't reliably check types for resume.
+            # Might be safer to disable resume in this case or fall back to basic inference.
+            logger.warning("Disabling resume functionality due to inability to load source param grid for type checking.")
+            args.resume = False
+            # source_param_grid_for_types remains an empty dict
+        # --- End Param Grid Load for Type Checking ---
+
         # --- Load Completed Params if Resuming (from CSV) ---
         completed_param_reps = set()
         if (
@@ -1514,70 +1558,132 @@ def main():
                 f"Resume flag set. Attempting to load completed parameters from: {details_filepath}"
             )
             try:
-                # Read the existing CSV file
-                # Use low_memory=False to potentially avoid dtype warnings with mixed types
                 df_completed = pd.read_csv(details_filepath, low_memory=False)
 
                 if not df_completed.empty:
-                    # Identify parameter columns (those starting with 'param_')
-                    param_cols = [
-                        col for col in df_completed.columns if col.startswith("param_")
-                    ]
+                    param_cols = [col for col in df_completed.columns if col.startswith("param_")]
                     if not param_cols:
-                        logger.warning(
-                            f"No columns starting with 'param_' found in {details_filepath}. Cannot determine completed parameters."
-                        )
+                        logger.warning(f"No columns starting with 'param_' found in {details_filepath}. Cannot resume accurately.")
                     else:
-                        df_params_only = df_completed[
-                            param_cols
-                        ].copy()  # Work on a copy
-                        # Remove 'param_' prefix
-                        df_params_only.columns = [
-                            col.replace("param_", "", 1) for col in param_cols
-                        ]
+                        df_params_only = df_completed[param_cols].copy()
+                        df_params_only.columns = [col.replace("param_", "", 1) for col in param_cols]
 
-                        # Convert each row to dict and then to tuple representation
-                        # Important: Convert dtypes after loading CSV as needed
-                        for _, row in df_params_only.iterrows():
-                            params_dict = row.to_dict()
-                            # Attempt to infer original types (this can be tricky with CSV)
-                            processed_params = {}
-                            for k, v in params_dict.items():
-                                if pd.isna(v) or str(v).lower() == "none":
-                                    processed_params[k] = None
+                        # Get a reference type map from the loaded source grid
+                        type_map = {}
+                        if source_param_grid_for_types: # Check if grid was loaded successfully
+                            for key, value_list in source_param_grid_for_types.items():
+                                if value_list: # Make sure list is not empty
+                                    # Handle potential combined keys like return_thresh_low/high
+                                    # We need the original key from the grid if possible
+                                    if key.endswith("_low") or key.endswith("_high"):
+                                         base_key = key.rsplit("_", 1)[0]
+                                         # If base_key exists and has values, use its type
+                                         if base_key in source_param_grid_for_types and source_param_grid_for_types[base_key]:
+                                             # Need to handle tuple type here - check first element?
+                                             if isinstance(source_param_grid_for_types[base_key][0], tuple):
+                                                 if source_param_grid_for_types[base_key][0]: # Check if tuple has elements
+                                                     type_map[key] = type(source_param_grid_for_types[base_key][0][0])
+                                                 else: type_map[key] = None # Cannot determine type
+                                             else: # Should not happen for _low/_high but handle just in case
+                                                type_map[key] = type(source_param_grid_for_types[base_key][0])
+                                         else: # Fallback to using _low/_high value type
+                                            type_map[key] = type(value_list[0])
+                                    else:
+                                        type_map[key] = type(value_list[0])
                                 else:
-                                    try:
-                                        # Try converting to int, then float, else keep as string/bool
-                                        processed_params[k] = int(v)
-                                    except (ValueError, TypeError):
-                                        try:
-                                            processed_params[k] = float(v)
-                                        except (ValueError, TypeError):
-                                            if isinstance(v, str):
-                                                if v.lower() == "true":
-                                                    processed_params[k] = True
-                                                elif v.lower() == "false":
-                                                    processed_params[k] = False
-                                                else:
-                                                    processed_params[k] = (
-                                                        v  # Keep as string if other conversions fail
-                                                    )
-                                            else:
-                                                processed_params[k] = (
-                                                    v  # Keep original type if not string
-                                                )
+                                     type_map[key] = None # Cannot determine type from empty list
 
-                            rep = params_to_tuple_rep(
-                                processed_params
-                            )  # Convert to hashable representation
-                            completed_param_reps.add(rep)
+                        # REMOVED logger.debug(f"Inferred type map from source grid: {type_map}")
+
+                        for i, row in df_params_only.iterrows():
+                            # REMOVED logger.debug(f"Raw CSV Row [{i+2}]: {row.to_dict()}")
+                            params_dict = row.to_dict()
+                            processed_params = {}
+                            conversion_successful = True
+                            for k, v in params_dict.items():
+                                if pd.isna(v):
+                                    processed_params[k] = None
+                                    continue
+
+                                # Get the expected type from the map
+                                expected_type = type_map.get(k)
+                                csv_value_str = str(v)
+
+                                if csv_value_str.lower() == "none":
+                                     processed_params[k] = None
+                                     continue
+
+                                try:
+                                    if expected_type is bool:
+                                        # Handle common boolean string representations from CSV
+                                        if csv_value_str.lower() in ['true', '1', '1.0', 't', 'y', 'yes']:
+                                            processed_params[k] = True
+                                        elif csv_value_str.lower() in ['false', '0', '0.0', 'f', 'n', 'no']:
+                                            processed_params[k] = False
+                                        else:
+                                            # Attempt direct bool conversion as last resort for bool type
+                                            processed_params[k] = bool(v)
+                                            logger.warning(f"Ambiguous boolean value '{v}' for key '{k}'. Interpreted as {processed_params[k]}. Consider standardizing CSV output.")
+                                    elif expected_type is float:
+                                        # Explicitly convert to float
+                                        processed_params[k] = float(v)
+                                    elif expected_type is int:
+                                        # Allow conversion from float string like "20.0" to int 20
+                                        # Also handle actual integers directly
+                                        processed_params[k] = int(float(v))
+                                    elif expected_type is str:
+                                        # Handle cases where expected type is string (likely due to 'None' in grid)
+                                        csv_value_str = str(v).strip()
+                                        if csv_value_str.lower() in ["none", "nan", ""]:
+                                             processed_params[k] = None
+                                        else:
+                                             try:
+                                                 # Attempt float conversion first for numeric-looking strings
+                                                 processed_params[k] = float(csv_value_str)
+                                             except ValueError:
+                                                 try:
+                                                      # Then attempt integer conversion
+                                                      processed_params[k] = int(csv_value_str)
+                                                 except ValueError:
+                                                      # If it's neither float nor int, keep it as a string
+                                                      processed_params[k] = csv_value_str
+                                    elif expected_type is None: # Fallback if type couldn't be inferred
+                                        # Type couldn't be inferred, fall back to basic inference (int -> float -> bool -> str)
+                                        # This maintains previous behavior for unknown keys but should be avoided.
+                                        logger.warning(f"Could not infer type for key '{k}' from source grid. Using basic inference.")
+                                        try: processed_params[k] = int(v)
+                                        except (ValueError, TypeError):
+                                            try: processed_params[k] = float(v)
+                                            except (ValueError, TypeError):
+                                                if isinstance(v, str):
+                                                    if v.lower() == 'true': processed_params[k] = True
+                                                    elif v.lower() == 'false': processed_params[k] = False
+                                                    else: processed_params[k] = v
+                                                else: processed_params[k] = v
+                                    else:
+                                        # If expected type is known but not explicitly handled above (e.g., list, tuple - shouldn't happen here)
+                                        # Attempt a reasonable default conversion (likely to string)
+                                        logger.warning(f"Unhandled expected type {expected_type} for key '{k}'. Defaulting to string representation.")
+                                        processed_params[k] = csv_value_str
+
+                                except (ValueError, TypeError) as e:
+                                    logger.error(f"Failed to convert value '{v}' for key '{k}' to expected type {expected_type}: {e}")
+                                    conversion_successful = False
+                                    break # Stop processing this row if any conversion fails
+
+                            if conversion_successful:
+                                rep = params_to_tuple_rep(processed_params)
+                                completed_param_reps.add(rep)
+                                # Limit debug logging for loaded reps
+                                # REMOVED DETAILED LOGGING HERE
+                                if len(completed_param_reps) % 500 == 0: # Log periodically for large files
+                                    logger.debug(f"Processed {len(completed_param_reps)} completed param reps from CSV...")
+                            else:
+                                 logger.warning(f"Skipping row {i+2} in CSV due to conversion errors.")
+
                         logger.info(
-                            f"Successfully loaded and processed {len(completed_param_reps)} completed parameter sets from CSV to skip."
+                            f"Successfully loaded and processed {len(completed_param_reps)} completed parameter sets from CSV."
                         )
-                else:
-                    logger.info(
-                        f"Existing CSV details file found but is empty. Starting fresh."
-                    )
             except pd.errors.EmptyDataError:
                 logger.info(
                     f"Existing CSV details file {details_filepath} is empty. Starting fresh."
@@ -1591,7 +1697,7 @@ def main():
                     f"Error reading or processing existing CSV details file {details_filepath} for resume: {e}. Optimization will run all parameters.",
                     exc_info=True,
                 )
-                completed_param_reps = set()  # Reset on error
+                completed_param_reps = set() # Reset on error
         # --- End Load Completed Params ---
 
         shared_worker_args = {
