@@ -134,7 +134,8 @@ trigger-threaded-optimizer:
 				ATR_FILTER_SMA_PERIOD=$(ATR_FILTER_SMA_PERIOD) \
 				APPLY_SEASONALITY_FILTER=$(TSO_APPLY_SEASONALITY_FILTER) \
 				ALLOWED_TRADING_HOURS_UTC='$(TSO_ALLOWED_TRADING_HOURS_UTC)' \
-				APPLY_SEASONALITY_TO_SYMBOLS='$(TSO_APPLY_SEASONALITY_TO_SYMBOLS)'; \
+				APPLY_SEASONALITY_TO_SYMBOLS='$(TSO_APPLY_SEASONALITY_TO_SYMBOLS)' \
+				LOG_LEVEL=DEBUG; \
 			if [ $$? -ne 0 ]; then \
 				echo "!!! Optimizer Task failed for Strategy=$${strategy}, Symbol=$${symbol} !!!"; \
 			fi; \
@@ -209,7 +210,8 @@ optimize:
 		$(if $(filter true,$(APPLY_SEASONALITY_FILTER)),--apply-seasonality-filter) \
 		--allowed-trading-hours-utc "$(ALLOWED_TRADING_HOURS_UTC)" \
 		--apply-seasonality-to-symbols "$(APPLY_SEASONALITY_TO_SYMBOLS)" \
-		$(if $(filter true,$(RESUME)),--resume)
+		$(if $(filter true,$(RESUME)),--resume) \
+		--log $(or $(LOG_LEVEL),INFO)
 
 ## Run strategy optimization for multiple strategies and symbols
 # Passes Make variables to the batch runner script using native Make conditionals
