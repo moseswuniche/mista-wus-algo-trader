@@ -23,6 +23,7 @@ import logging.handlers
 import time
 import traceback  # For listener error reporting
 import re  # Import re for sanitize_filename if not already imported
+from tqdm import tqdm  # Import tqdm
 
 # Assuming strategies are accessible via this import path
 from .strategies import (
@@ -533,12 +534,19 @@ def optimize_strategy(
     # --- New argument for resuming ---
     completed_param_reps: Optional[set] = None,
     # --- End new argument ---
+    # --- Command-line filter flags ---
+    cmd_apply_atr_filter: bool = False,
+    cmd_apply_seasonality_filter: bool = False,
+    # --- End command-line flags ---
+    # --- Add source grid for type checking --- << NEW ARG >>
+    source_param_grid: Optional[Dict[str, List[Any]]] = None,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
     """
     Optimizes a single strategy for a given symbol using grid search with multiprocessing,
     avoiding redundant backtests for duplicate parameter sets.
     If save_details is True, writes detailed results incrementally to details_filepath (CSV).
     If completed_param_reps is provided, skips combinations present in the set.
+    If command-line flags (cmd_apply_...) are False, removes corresponding params from the grid before generation.
     """
     # Removed global declarations for parquet/atexit
     logger = logging.getLogger(__name__)
@@ -572,7 +580,7 @@ def optimize_strategy(
     strategy_class_name = strategy_class.__name__
 
     try:
-        # --- Load and Process Parameter Grid ---
+        # --- Load Parameter Grid ---
         config_file = Path(config_path)
         logger.info(f"Loading param grid from: {config_file}")
         if not config_file.is_file():
@@ -605,9 +613,57 @@ def optimize_strategy(
             raise ValueError(
                 f"Parameter grid for {symbol}/{strategy_class_name} is not a dictionary."
             )
+        # --- End Load Parameter Grid ---
 
-        # Process individual parameter lists (normalize 'None', dedupe values within list, sort)
+        # --- Pre-filter Grid based on Command-Line Flags --- << NEW BLOCK >> ---
+        original_grid_keys = set(loaded_grid.keys())
+
+        if not cmd_apply_atr_filter:
+            atr_params_to_remove = [
+                "apply_atr_filter",  # In case it exists in YAML
+                "atr_filter_period",
+                "atr_filter_multiplier",
+                "atr_filter_threshold",  # Name used in current YAML
+                "atr_filter_sma_period",
+            ]
+            removed_atr_count = 0
+            for param in atr_params_to_remove:
+                if loaded_grid.pop(param, None) is not None:
+                    removed_atr_count += 1
+            if removed_atr_count > 0:
+                logger.info(
+                    f"Command-line flag --apply-atr-filter is OFF. Removed {removed_atr_count} ATR-related parameters from the optimization grid."
+                )
+
+        if not cmd_apply_seasonality_filter:
+            seasonality_params_to_remove = [
+                "apply_seasonality_filter",  # Potential flag name
+                "apply_seasonality",  # Flag name in current YAML
+                "allowed_trading_hours_utc",
+                "apply_seasonality_to_symbols",
+                "seasonality_start_hour",  # Name in current YAML
+                "seasonality_end_hour",  # Name in current YAML
+            ]
+            removed_season_count = 0
+            for param in seasonality_params_to_remove:
+                if loaded_grid.pop(param, None) is not None:
+                    removed_season_count += 1
+            if removed_season_count > 0:
+                logger.info(
+                    f"Command-line flag --apply-seasonality-filter is OFF. Removed {removed_season_count} seasonality-related parameters from the optimization grid."
+                )
+
+        # --- End Pre-filter Grid ---
+
+        # --- Process Remaining Parameter Grid (Normalize, Dedupe, Sort) ---
         param_grid: Dict[str, List[Any]] = {}
+        if not loaded_grid:
+            logger.warning(
+                f"Parameter grid for {symbol}/{strategy_class_name} is empty after command-line filtering. No optimization possible."
+            )
+            # Need to decide if this is an error or just means no combinations
+            # For now, let the logic proceed, it will result in 0 combinations later
+
         for key, value in loaded_grid.items():
             if not isinstance(value, list):
                 logger.error(
@@ -655,7 +711,7 @@ def optimize_strategy(
                     f"Sorting failed for parameter '{key}' values ({unique_values_list}): {e}. Using original order of unique items."
                 )
                 param_grid[key] = unique_values_list
-        # --- End Load and Process Parameter Grid ---
+        # --- End Process Remaining Parameter Grid ---
 
     except (FileNotFoundError, ValueError) as e:
         logger.error(
@@ -664,19 +720,23 @@ def optimize_strategy(
         return None, None
 
     # --- Define Flags and Dependencies ---
-    # Identify boolean flags and the parameters that depend on them
-    # This might need adjustment if parameter names change
+    # Identify boolean flags *present in the YAML grid* and the parameters that depend on them.
+    # This dictionary MUST use the exact parameter names found as keys in the optimize_params.yaml file.
+    # Flags controlled *only* by command-line arguments (e.g., --apply-atr-filter if it's not listed
+    # in the YAML grid) should NOT be included here. Their dependent parameters will be treated
+    # as independent by the generator, and the command-line flag will control their use during the backtest.
     flags_and_deps = {
-        "apply_atr_filter": [
-            "atr_filter_period",
-            "atr_filter_multiplier",
-            "atr_filter_sma_period",
+        # Example: If apply_atr_filter was varied in the YAML:
+        # "apply_atr_filter": [
+        #     "atr_filter_period",
+        #     "atr_filter_threshold", # Note: Name used in YAML
+        #     # "atr_filter_sma_period", # This key is currently missing from YAML
+        # ],
+        "apply_seasonality": [  # Flag name found in YAML
+            "seasonality_start_hour",  # Dependent name found in YAML
+            "seasonality_end_hour",  # Dependent name found in YAML
+            # "apply_seasonality_to_symbols", # This key is currently missing from YAML
         ],
-        "apply_seasonality_filter": [
-            "allowed_trading_hours_utc",
-            "apply_seasonality_to_symbols",
-        ],
-        # Add other flags and dependencies here if needed
     }
 
     # Separate grid into flags, dependents, and independents
@@ -1044,19 +1104,19 @@ def optimize_strategy(
             # Removed pyarrow_available check and import block
             # --- End Initialization ---
 
-            # <<< ITERATE OVER IMAP RESULTS >>>
-            for result_params, result_metrics in imap_results:
+            # <<< ITERATE OVER IMAP RESULTS using tqdm >>>
+            progress_iterator = tqdm(
+                imap_results,
+                total=total_results_to_process,
+                desc=f"Optimizing {strategy_short_name}/{symbol}",
+                unit=" combo",
+                file=sys.stderr,  # Output progress bar to stderr
+                disable=None,  # Auto-disable in non-interactive environments
+                ncols=100,  # Set a reasonable width
+            )
+            for result_params, result_metrics in progress_iterator:
                 # Indented loop body
                 processed_unique_count += 1
-
-                # Log progress periodically
-                if (processed_unique_count % results_log_interval == 0) or (
-                    processed_unique_count == total_results_to_process
-                ):
-                    progress_message = f"Processing results progress for {strategy_short_name}/{symbol}: {processed_unique_count}/{total_results_to_process}   "  # Add padding
-                    print(
-                        progress_message, end="\r", file=sys.stderr, flush=True
-                    )  # Print to stderr, overwrite line
 
                 # --- Process the result (same logic as before) ---
                 if result_params is not None and result_metrics is not None:
@@ -1181,23 +1241,41 @@ def optimize_strategy(
                     )
             # <<< END ITERATION OVER IMAP RESULTS >>>
 
-            # Final progress update to ensure 100% is shown
-            if total_results_to_process > 0:
-                progress_message = f"Processing results progress for {strategy_short_name}/{symbol}: {processed_unique_count}/{total_results_to_process}   "
-                print(progress_message, end="\r", file=sys.stderr, flush=True)
+            # REMOVED final progress update print - tqdm handles the final state
+            # if total_results_to_process > 0:
+            #     progress_message = f"Processing results progress for {strategy_short_name}/{symbol}: {processed_unique_count}/{total_results_to_process}   "
+            #     print(progress_message, end="\r", file=sys.stderr, flush=True)
 
             # Move print newline here, after progress updates are definitely finished
+            # Add newline after tqdm finishes to prevent overlapping logs
             if total_results_to_process > 0:
-                print(file=sys.stderr)
+                print(file=sys.stderr)  # Print a newline after tqdm completes
 
         logger.info(
             "Parallel backtesting finished."
         )  # Log can remain here or move earlier
     except Exception as e:
         logger.exception(f"Error during parallel backtesting: {e}", exc_info=True)
+        # <<< ADDED RETURN ON EXCEPTION >>>
         return None, None
+    finally:
+        # Ensure the pool is always terminated properly
+        if "pool" in locals() and pool is not None:  # Check if pool was initialized
+            pool.terminate()  # Force termination if not closed/joined
+            pool.join()  # Wait for termination
+            logger.debug("Worker pool terminated and joined in finally block.")
+        # REMOVED log_listener handling - it's managed in main()
+        # # Ensure the listener is stopped
+        # if log_listener:
+        #     log_listener.stop()
+        #     logger.debug("Log listener stopped in finally block.")
+
+    logger.info(
+        f"Finished processing {processed_unique_count}/{total_results_to_process} unique combinations."
+    )
 
     # --- Write Final CSV Batch (if any) ---
+    # This part remains unchanged
     if save_details and results_batch:
         try:
             # Convert final results list to DataFrame
@@ -1238,21 +1316,137 @@ def optimize_strategy(
                 f"Wrote final batch of {len(details_df)} results to CSV: {details_filepath}"
             )
         except Exception as e:
-            logger.error(
-                f"Error writing final batch to CSV file {details_filepath}: {e}"
-            )
-    # --- End Final CSV Batch ---
+            logger.error(f"Error writing final batch to CSV: {e}", exc_info=True)
 
-    # Final Summary Log (remains the same, but now reflects incrementally processed results)
+    # --- Determine Overall Best Params from Full History (if saving details) --- << NEW BLOCK >>
+    overall_best_params = best_params # Start with best from current run as fallback
+    overall_best_metrics_dict = best_metrics_dict # Fallback metrics
+
+    if save_details and details_filepath and details_filepath.is_file():
+        logger.info(f"Analyzing full results file to determine overall best params: {details_filepath}")
+        try:
+            df_full_results = pd.read_csv(details_filepath, low_memory=False)
+
+            if df_full_results.empty:
+                logger.warning(f"Details file {details_filepath} is empty. Using best results from current run (if any).")
+            else:
+                metric_col = f"result_{optimization_metric}"
+                if metric_col not in df_full_results.columns:
+                    logger.warning(f"Metric column '{metric_col}' not found in {details_filepath}. Cannot determine overall best. Using best from current run.")
+                else:
+                    # Drop rows where the target metric is NaN
+                    df_valid_metric = df_full_results.dropna(subset=[metric_col])
+
+                    if df_valid_metric.empty:
+                        logger.warning(f"No valid (non-NaN) values found for metric '{metric_col}' in {details_filepath}. Using best from current run.")
+                    else:
+                        if minimize_metric:
+                            best_idx = df_valid_metric[metric_col].idxmin()
+                        else:
+                            best_idx = df_valid_metric[metric_col].idxmax()
+
+                        best_row = df_valid_metric.loc[best_idx]
+
+                        # Extract param columns and values from the best row
+                        param_cols = [c for c in df_full_results.columns if c.startswith("param_")]
+                        csv_best_params_raw = {
+                            col.replace("param_", "", 1): best_row[col]
+                            for col in param_cols
+                        }
+
+                        # --- Convert CSV params back to correct types --- #
+                        # Reuse the type inference logic from resume loading
+                        type_map_from_source = {}
+                        if source_param_grid: # Use the passed source grid
+                            for key, value_list in source_param_grid.items():
+                                if value_list:
+                                     # Simplified type inference (assumes simple types in grid)
+                                    type_map_from_source[key] = type(value_list[0])
+                                else:
+                                    type_map_from_source[key] = None
+                        else:
+                            logger.warning("Source parameter grid not provided to optimize_strategy. Type conversion for overall best params might be inaccurate.")
+
+                        overall_best_params_typed = {}
+                        conversion_successful = True
+                        for k, v in csv_best_params_raw.items():
+                            if pd.isna(v):
+                                overall_best_params_typed[k] = None
+                                continue
+
+                            expected_type = type_map_from_source.get(k)
+                            csv_value_str = str(v).strip()
+
+                            if csv_value_str.lower() == "none":
+                                overall_best_params_typed[k] = None
+                                continue
+
+                            try:
+                                if expected_type is bool:
+                                    if csv_value_str.lower() in ["true", "1", "1.0", "t", "y", "yes"]:
+                                        overall_best_params_typed[k] = True
+                                    elif csv_value_str.lower() in ["false", "0", "0.0", "f", "n", "no"]:
+                                        overall_best_params_typed[k] = False
+                                    else:
+                                        overall_best_params_typed[k] = bool(v)
+                                elif expected_type is float:
+                                    overall_best_params_typed[k] = float(v)
+                                elif expected_type is int:
+                                    overall_best_params_typed[k] = int(float(v))
+                                elif expected_type is str:
+                                      if csv_value_str.lower() in ["none", "nan", ""]:
+                                         overall_best_params_typed[k] = None
+                                      else:
+                                         overall_best_params_typed[k] = csv_value_str # Keep as string if expected type is string
+                                elif expected_type is None or expected_type is object: # Fallback if type unknown or pandas object
+                                    # Basic inference
+                                    try: overall_best_params_typed[k] = int(float(v))
+                                    except (ValueError, TypeError): # noqa: E722
+                                      try: overall_best_params_typed[k] = float(v)
+                                      except (ValueError, TypeError): # noqa: E722
+                                         if csv_value_str.lower() == "true": overall_best_params_typed[k] = True
+                                         elif csv_value_str.lower() == "false": overall_best_params_typed[k] = False
+                                         else: overall_best_params_typed[k] = csv_value_str # Fallback to string
+                                else:
+                                    # Try direct conversion for other simple types if needed
+                                    overall_best_params_typed[k] = expected_type(v)
+
+                            except (ValueError, TypeError) as e:
+                                logger.error(f"Failed to convert overall best param value '{v}' for key '{k}' to expected type {expected_type}: {e}. Skipping update.")
+                                conversion_successful = False
+                                break
+                        # --- End Type Conversion --- #
+
+                        if conversion_successful:
+                            logger.info(f"Overall best parameters determined from {details_filepath} based on metric '{optimization_metric}'.")
+                            overall_best_params = overall_best_params_typed
+                            # Also store the corresponding metrics dict from that row
+                            result_cols = [c for c in df_full_results.columns if c.startswith("result_")]
+                            overall_best_metrics_dict = {col.replace("result_", "", 1): best_row[col] for col in result_cols}
+                            # Update best_metric_value as well for final logging
+                            best_metric_value = best_row[metric_col]
+                        else:
+                             logger.warning("Type conversion failed for best params from CSV. Using best from current run.")
+
+        except pd.errors.EmptyDataError:
+             logger.warning(f"Details file {details_filepath} is empty. Using best results from current run (if any).")
+        except FileNotFoundError:
+            logger.error(f"Details file {details_filepath} not found for final analysis. Using best from current run.")
+        except Exception as e:
+            logger.error(f"Error reading or analyzing full results file {details_filepath}: {e}. Using best from current run.", exc_info=True)
+    # --- End Determine Overall Best --- << END NEW BLOCK >>
+
+    # --- Final Summary Log (uses potentially updated best_params/metrics) --- #
     logger.info(f"Finished processing results for {strategy_short_name} on {symbol}.")
     logger.info(
         f"  Processed {processed_unique_count} worker results."
-    )  # Use counter from loop
+    ) # Use counter from loop
     logger.info(
         f"  Found {successful_unique_count} successful backtest results."
-    )  # Use counter from loop
+    ) # Use counter from loop
 
-    if best_params is None:
+    # <<< Use the potentially updated overall_best_params >>>
+    if overall_best_params is None:
         logger.warning(
             f"No best parameters found for {strategy_class_name} on {symbol}. No successful backtests or specified metric '{optimization_metric}' not found?"
         )
@@ -1260,33 +1454,34 @@ def optimize_strategy(
         return None, None
 
     # Ensure best_metric_value is formatted correctly for the final log message
-    if best_metric_value is not None and best_metric_value not in [
+    # Use the potentially updated best_metric_value from CSV analysis
+    if best_metric_value is not None and pd.notna(best_metric_value) and best_metric_value not in [
         float("inf"),
         -float("inf"),
     ]:
         final_best_metric_value_str = f"{best_metric_value:.4f}"
     else:
         final_best_metric_value_str = (
-            "N/A"  # Should not happen if best_params is not None
+            "N/A"  # Should not happen if overall_best_params is not None
         )
 
     logger.info(
-        f"Best parameters found for {strategy_class_name} on {symbol}: "
-        f"{adjust_params_for_printing(best_params, strategy_class_name)} "
+        f"Best parameters found for {strategy_class_name} on {symbol} (overall best from history if available): "
+        f"{adjust_params_for_printing(overall_best_params, strategy_class_name)} "
         f"with {optimization_metric} = {final_best_metric_value_str}"
     )
 
-    # Use the already stored best_metrics_dict
+    # Use the potentially updated overall_best_metrics_dict
     if (
-        best_metrics_dict is None and best_params is not None
-    ):  # This condition might occur if the best metric value was inf/-inf
+        overall_best_metrics_dict is None and overall_best_params is not None
+    ): # This condition might occur if the best metric value was inf/-inf
         logger.warning(
             "Could not retrieve the full metrics dictionary for the determined best parameters."
         )
 
-    # Return the best params and the corresponding full metrics dict
-    return best_params, best_metrics_dict
-
+    # Return the overall best params and the corresponding full metrics dict
+    # <<< FINAL RETURN STATEMENT uses overall best >>>
+    return overall_best_params, overall_best_metrics_dict
 
 def adjust_params_for_printing(
     params: Dict[str, Any], strategy_class_name: str
@@ -1945,6 +2140,12 @@ def main():
             details_filepath=details_filepath,
             # Pass new argument for resuming
             completed_param_reps=completed_param_reps,
+            # --- Command-line filter flags ---
+            cmd_apply_atr_filter=args.apply_atr_filter,
+            cmd_apply_seasonality_filter=args.apply_seasonality_filter,
+            # --- End command-line flags ---
+            # --- Pass source grid --- << NEW >>
+            source_param_grid=source_param_grid_for_types,
         )
         # --- End Call ---
 

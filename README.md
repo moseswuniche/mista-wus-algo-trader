@@ -13,6 +13,7 @@ Features include:
   - Parameter grids defined in `config/optimize_params.yaml`, including SL/TP/TSL and optional trend filter.
   - Best parameters (including SL/TP/TSL, trend filter) saved to `config/best_params.yaml`.
   - **Efficient Generation:** Skips redundant combinations where controlling flags (e.g., `apply_atr_filter`) are False but dependent parameters vary, significantly speeding up optimization runs with filters enabled.
+  - **Command-Line Pre-Filtering:** If a filter (e.g., ATR, Seasonality) is disabled via command-line flag (e.g., by omitting `--apply-atr-filter`), parameters related to that filter in the YAML grid will be ignored entirely, further preventing unnecessary combination generation and testing.
 - **Parallel** Batch optimization for multiple strategies/symbols (`run_batch_optimization.py`) - *[Review/update completed]*
 - **Sequential** Batch optimization via `make trigger-threaded-optimizer`
 - Optimization based on selectable performance metrics
@@ -140,6 +141,7 @@ Use `make help` to see available commands and default variable values.
         ```
         *   The `TSO_PROCESSES` variable controls the number of cores used by the underlying `optimize.py` script for *each* sequential optimization task.
         *   Use `TSO_APPLY_ATR_FILTER=true` and `TSO_APPLY_SEASONALITY_FILTER=true` Makefile variables.
+        *   Provides a `tqdm` progress bar showing completion status, rate, and ETA for each optimization task.
     *   Configure parameter search ranges, including filters (`atr_*`, `seasonality_*`), risk management (`stop_loss_pct`, etc.), and strategy specifics, in `config/optimize_params.yaml`.
     *   Specify the optimization target using `METRIC=` or `TSO_METRIC=` (Makefile variables) or `--metric` (`OPTIMIZE_ARGS`). Choices: `cumulative_profit`, `final_balance`, `sharpe_ratio`, `profit_factor`, `max_drawdown`, `win_rate`.
     *   Use `SAVE_DETAILS=true` or `TSO_SAVE_DETAILS=true` (Makefile variables) or `--save-details` (`OPTIMIZE_ARGS`) to save all tested combinations to a CSV file in `results/optimization/`.
