@@ -297,17 +297,23 @@ def run_backtest(
         # ATR Filter Check
         if apply_atr_filter and hasattr(row, "atr") and row.atr is not None:
             atr_threshold = row.atr * atr_filter_multiplier
-            if atr_filter_sma_period > 0 and hasattr(row, "atr_sma") and row.atr_sma is not None:
+            if (
+                atr_filter_sma_period > 0
+                and hasattr(row, "atr_sma")
+                and row.atr_sma is not None
+            ):
                 # If SMA is enabled, allow trade only if price is above/below ATR threshold relative to SMA
                 # This part might need refinement based on the exact ATR filter logic desired
                 # Example: require price to be significantly volatile compared to recent average volatility
                 # Simplified version: Check if ATR itself is above the threshold (basic volatility check)
-                if row.atr < (atr_threshold / atr_filter_multiplier): # Check original ATR value for threshold
+                if row.atr < (
+                    atr_threshold / atr_filter_multiplier
+                ):  # Check original ATR value for threshold
                     filtered_out = True
                     # logger.debug(f"{current_time}: Filtered by ATR (value {row.atr:.4f} < threshold {atr_threshold:.4f}) using SMA baseline") # COMMENTED OUT
             elif row.atr < atr_threshold:
-                    filtered_out = True
-                    # logger.debug(f"{current_time}: Filtered by ATR (value {row.atr:.4f} < threshold {atr_threshold:.4f})") # COMMENTED OUT
+                filtered_out = True
+                # logger.debug(f"{current_time}: Filtered by ATR (value {row.atr:.4f} < threshold {atr_threshold:.4f})") # COMMENTED OUT
 
         # Seasonality Filter Check
         if (
@@ -321,18 +327,20 @@ def run_backtest(
                 filtered_out = True
                 # logger.debug(f"{current_time}: Filtered by Seasonality (hour {current_hour} outside {start_hour}-{end_hour})") # COMMENTED OUT
                 # If filtered by seasonality, force exit any open position
-                signal = -current_pos if current_pos != 0 else 0 # Force exit
+                signal = -current_pos if current_pos != 0 else 0  # Force exit
 
         # --- Check for Stop Loss / Take Profit / Trailing Stop --- #
         exit_reason = None
-        exit_price = current_price # Default exit price if triggered by signal change
+        exit_price = current_price  # Default exit price if triggered by signal change
 
-        if current_pos == 1: # Long position checks
+        if current_pos == 1:  # Long position checks
             # Trailing Stop Loss Update & Check
             if trailing_stop_loss_pct_cleaned is not None:
                 if tsl_peak_price is None or high_price > tsl_peak_price:
                     tsl_peak_price = high_price
-                potential_tsl_level = tsl_peak_price * (1 - trailing_stop_loss_pct_cleaned)
+                potential_tsl_level = tsl_peak_price * (
+                    1 - trailing_stop_loss_pct_cleaned
+                )
                 if stop_loss_level is None or potential_tsl_level > stop_loss_level:
                     # if stop_loss_level != potential_tsl_level: # Check prevents logging spam if level unchanged
                     #      logger.debug(f"{current_time}: Updated TSL level (Long) to {potential_tsl_level:.4f} from {stop_loss_level}") # COMMENTED OUT
@@ -341,20 +349,22 @@ def run_backtest(
             # Stop Loss Check
             if stop_loss_level is not None and low_price <= stop_loss_level:
                 exit_reason = "Stop Loss"
-                exit_price = stop_loss_level # Exit at stop level
-                signal = -1 # Force exit signal
+                exit_price = stop_loss_level  # Exit at stop level
+                signal = -1  # Force exit signal
             # Take Profit Check
             elif take_profit_level is not None and high_price >= take_profit_level:
                 exit_reason = "Take Profit"
-                exit_price = take_profit_level # Exit at profit level
-                signal = -1 # Force exit signal
+                exit_price = take_profit_level  # Exit at profit level
+                signal = -1  # Force exit signal
 
-        elif current_pos == -1: # Short position checks
+        elif current_pos == -1:  # Short position checks
             # Trailing Stop Loss Update & Check
             if trailing_stop_loss_pct_cleaned is not None:
                 if tsl_peak_price is None or low_price < tsl_peak_price:
                     tsl_peak_price = low_price
-                potential_tsl_level = tsl_peak_price * (1 + trailing_stop_loss_pct_cleaned)
+                potential_tsl_level = tsl_peak_price * (
+                    1 + trailing_stop_loss_pct_cleaned
+                )
                 if stop_loss_level is None or potential_tsl_level < stop_loss_level:
                     # if stop_loss_level != potential_tsl_level: # Check prevents logging spam if level unchanged
                     #     logger.debug(f"{current_time}: Updated TSL level (Short) to {potential_tsl_level:.4f} from {stop_loss_level}") # COMMENTED OUT
@@ -363,20 +373,22 @@ def run_backtest(
             # Stop Loss Check
             if stop_loss_level is not None and high_price >= stop_loss_level:
                 exit_reason = "Stop Loss"
-                exit_price = stop_loss_level # Exit at stop level
-                signal = 1 # Force exit signal
+                exit_price = stop_loss_level  # Exit at stop level
+                signal = 1  # Force exit signal
             # Take Profit Check
             elif take_profit_level is not None and low_price <= take_profit_level:
                 exit_reason = "Take Profit"
-                exit_price = take_profit_level # Exit at profit level
-                signal = 1 # Force exit signal
+                exit_price = take_profit_level  # Exit at profit level
+                signal = 1  # Force exit signal
 
         # --- Position Management based on Signal --- #
-        if filtered_out and signal != -current_pos: # If filtered out, ignore new entry signals
-             if signal != 0 and current_pos == 0 :
-                 # logger.debug(f"{current_time}: Entry signal {signal} ignored due to active filter.") # COMMENTED OUT
-                 pass # Explicitly do nothing
-             signal = 0 # Ignore entry signal if filtered
+        if (
+            filtered_out and signal != -current_pos
+        ):  # If filtered out, ignore new entry signals
+            if signal != 0 and current_pos == 0:
+                # logger.debug(f"{current_time}: Entry signal {signal} ignored due to active filter.") # COMMENTED OUT
+                pass  # Explicitly do nothing
+            signal = 0  # Ignore entry signal if filtered
 
         if current_pos == 0:
             if signal == 1:
@@ -387,9 +399,17 @@ def run_backtest(
                 trade_count += 1
                 commission_cost = entry_price * units * commission
                 balance -= commission_cost
-                stop_loss_level = entry_price * (1 - stop_loss_pct_cleaned) if stop_loss_pct_cleaned is not None else None
-                take_profit_level = entry_price * (1 + take_profit_pct_cleaned) if take_profit_pct_cleaned is not None else None
-                tsl_peak_price = entry_price # Initialize TSL peak
+                stop_loss_level = (
+                    entry_price * (1 - stop_loss_pct_cleaned)
+                    if stop_loss_pct_cleaned is not None
+                    else None
+                )
+                take_profit_level = (
+                    entry_price * (1 + take_profit_pct_cleaned)
+                    if take_profit_pct_cleaned is not None
+                    else None
+                )
+                tsl_peak_price = entry_price  # Initialize TSL peak
                 # logger.debug(f"{current_time}: ENTER LONG @ {entry_price:.4f}, Units: {units}, Commission: {commission_cost:.4f}, Balance: {balance:.2f}, SL: {stop_loss_level}, TP: {take_profit_level}") # COMMENTED OUT
             elif signal == -1:
                 # Enter Short
@@ -399,9 +419,17 @@ def run_backtest(
                 trade_count += 1
                 commission_cost = entry_price * units * commission
                 balance -= commission_cost
-                stop_loss_level = entry_price * (1 + stop_loss_pct_cleaned) if stop_loss_pct_cleaned is not None else None
-                take_profit_level = entry_price * (1 - take_profit_pct_cleaned) if take_profit_pct_cleaned is not None else None
-                tsl_peak_price = entry_price # Initialize TSL peak
+                stop_loss_level = (
+                    entry_price * (1 + stop_loss_pct_cleaned)
+                    if stop_loss_pct_cleaned is not None
+                    else None
+                )
+                take_profit_level = (
+                    entry_price * (1 - take_profit_pct_cleaned)
+                    if take_profit_pct_cleaned is not None
+                    else None
+                )
+                tsl_peak_price = entry_price  # Initialize TSL peak
                 # logger.debug(f"{current_time}: ENTER SHORT @ {entry_price:.4f}, Units: {units}, Commission: {commission_cost:.4f}, Balance: {balance:.2f}, SL: {stop_loss_level}, TP: {take_profit_level}") # COMMENTED OUT
 
         elif current_pos == 1 and signal == -1:
@@ -410,7 +438,8 @@ def run_backtest(
             commission_cost = exit_price * units * commission
             net_pnl = pnl - commission_cost
             balance += net_pnl
-            if net_pnl > 0: winning_trades += 1
+            if net_pnl > 0:
+                winning_trades += 1
             trade_log.append(
                 {
                     "Entry Time": entry_time,
@@ -431,27 +460,37 @@ def run_backtest(
             take_profit_level = None
             tsl_peak_price = None
             # Check if we need to enter short immediately
-            if not filtered_out and getattr(row, "signal", 0) == -1: # Use original signal if not forced exit
-                 # Enter Short immediately after exit
-                 current_pos = -1
-                 entry_price = current_price # Use current row close for immediate entry
-                 entry_time = current_time
-                 trade_count += 1
-                 commission_cost_entry = entry_price * units * commission
-                 balance -= commission_cost_entry
-                 stop_loss_level = entry_price * (1 + stop_loss_pct_cleaned) if stop_loss_pct_cleaned is not None else None
-                 take_profit_level = entry_price * (1 - take_profit_pct_cleaned) if take_profit_pct_cleaned is not None else None
-                 tsl_peak_price = entry_price
-                 # logger.debug(f"{current_time}: ENTER SHORT (Immediate) @ {entry_price:.4f}, Units: {units}, Commission: {commission_cost_entry:.4f}, Balance: {balance:.2f}, SL: {stop_loss_level}, TP: {take_profit_level}") # COMMENTED OUT
-
+            if (
+                not filtered_out and getattr(row, "signal", 0) == -1
+            ):  # Use original signal if not forced exit
+                # Enter Short immediately after exit
+                current_pos = -1
+                entry_price = current_price  # Use current row close for immediate entry
+                entry_time = current_time
+                trade_count += 1
+                commission_cost_entry = entry_price * units * commission
+                balance -= commission_cost_entry
+                stop_loss_level = (
+                    entry_price * (1 + stop_loss_pct_cleaned)
+                    if stop_loss_pct_cleaned is not None
+                    else None
+                )
+                take_profit_level = (
+                    entry_price * (1 - take_profit_pct_cleaned)
+                    if take_profit_pct_cleaned is not None
+                    else None
+                )
+                tsl_peak_price = entry_price
+                # logger.debug(f"{current_time}: ENTER SHORT (Immediate) @ {entry_price:.4f}, Units: {units}, Commission: {commission_cost_entry:.4f}, Balance: {balance:.2f}, SL: {stop_loss_level}, TP: {take_profit_level}") # COMMENTED OUT
 
         elif current_pos == -1 and signal == 1:
             # Exit Short
-            pnl = (entry_price - exit_price) * units # Reversed for short
+            pnl = (entry_price - exit_price) * units  # Reversed for short
             commission_cost = exit_price * units * commission
             net_pnl = pnl - commission_cost
             balance += net_pnl
-            if net_pnl > 0: winning_trades += 1
+            if net_pnl > 0:
+                winning_trades += 1
             trade_log.append(
                 {
                     "Entry Time": entry_time,
@@ -471,19 +510,29 @@ def run_backtest(
             stop_loss_level = None
             take_profit_level = None
             tsl_peak_price = None
-             # Check if we need to enter long immediately
-            if not filtered_out and getattr(row, "signal", 0) == 1: # Use original signal if not forced exit
-                 # Enter Long immediately after exit
-                 current_pos = 1
-                 entry_price = current_price # Use current row close for immediate entry
-                 entry_time = current_time
-                 trade_count += 1
-                 commission_cost_entry = entry_price * units * commission
-                 balance -= commission_cost_entry
-                 stop_loss_level = entry_price * (1 - stop_loss_pct_cleaned) if stop_loss_pct_cleaned is not None else None
-                 take_profit_level = entry_price * (1 + take_profit_pct_cleaned) if take_profit_pct_cleaned is not None else None
-                 tsl_peak_price = entry_price
-                 # logger.debug(f"{current_time}: ENTER LONG (Immediate) @ {entry_price:.4f}, Units: {units}, Commission: {commission_cost_entry:.4f}, Balance: {balance:.2f}, SL: {stop_loss_level}, TP: {take_profit_level}") # COMMENTED OUT
+            # Check if we need to enter long immediately
+            if (
+                not filtered_out and getattr(row, "signal", 0) == 1
+            ):  # Use original signal if not forced exit
+                # Enter Long immediately after exit
+                current_pos = 1
+                entry_price = current_price  # Use current row close for immediate entry
+                entry_time = current_time
+                trade_count += 1
+                commission_cost_entry = entry_price * units * commission
+                balance -= commission_cost_entry
+                stop_loss_level = (
+                    entry_price * (1 - stop_loss_pct_cleaned)
+                    if stop_loss_pct_cleaned is not None
+                    else None
+                )
+                take_profit_level = (
+                    entry_price * (1 + take_profit_pct_cleaned)
+                    if take_profit_pct_cleaned is not None
+                    else None
+                )
+                tsl_peak_price = entry_price
+                # logger.debug(f"{current_time}: ENTER LONG (Immediate) @ {entry_price:.4f}, Units: {units}, Commission: {commission_cost_entry:.4f}, Balance: {balance:.2f}, SL: {stop_loss_level}, TP: {take_profit_level}") # COMMENTED OUT
 
         # Log equity at each step (or less frequently if needed)
         # logger.debug(f"{current_time}: Equity: {equity_curve.iloc[i]:.2f}, Balance: {balance:.2f}, Position: {current_pos}") # COMMENTED OUT

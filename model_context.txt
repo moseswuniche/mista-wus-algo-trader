@@ -3,39 +3,53 @@
 **Description:** A Python-based algorithmic trading bot framework designed for cryptocurrencies on Binance. It supports modular strategies, live trading via WebSockets, backtesting, parameter optimization, and forward testing. The framework includes features like configurable stop-loss, take-profit, trailing-stop-loss, max cumulative loss limits, universal ATR and Seasonality filters, configurable MA types (EMA/SMA) in strategies, Z-score based logic for LongShortStrategy, and runtime configuration reloading for the live trader.
 
 **Core Components:**
-*   `src/trading_bots/trader.py`: Handles live trading logic, WebSocket management, order execution, runtime configuration, and applies configured filters (ATR, Seasonality).
+*   `src/trading_bots/trader.py`: Handles live trading logic, WebSocket management, order execution, runtime configuration (loading `runtime_config.yaml`), and applies configured filters (ATR, Seasonality). Supports **runtime reloading** of configuration if the bot is flat.
 *   `src/trading_bots/strategies/`: Directory containing strategy implementations (e.g., `LongShortStrategy`, `MACross`, `RSIReversion`, `BBReversion`), all inheriting from `base_strategy.Strategy`. Strategies now support EMA/SMA trend filters and may include specific enhancements (e.g., ATR-adjusted RSI, Z-score volume/return in LongShort).
-*   `src/trading_bots/backtest.py`: Provides the `run_backtest` function for simulating strategy performance on historical data, including intra-bar SL/TP checks and application of universal filters (ATR, Seasonality).
-*   `src/trading_bots/optimize.py`: Performs grid search optimization for strategy parameters defined in `config/optimize_params.yaml`. First, it pre-filters this grid, removing parameters related to filters (e.g., ATR, Seasonality) if those filters are disabled via command-line arguments (`--apply-atr-filter`, `--apply-seasonality-filter`). Then, it uses a smart parameter generator to avoid creating redundant combinations based on boolean flags present *within the filtered grid* (e.g., `apply_seasonality` if varied in YAML) to further improve efficiency. It leverages multiprocessing for parallel backtests (`run_backtest_for_params`), saves best parameters to `config/best_params.yaml`, saves detailed summary metrics to CSV (`--save-details`), and supports resuming (`--resume`). It uses `tqdm` to display a progress bar with ETA during the processing of backtest results.
-*   `src/trading_bots/forward_test.py`: Runs a backtest using optimized parameters (including filters) on a specified forward period, generating reports and trade logs.
-*   `src/trading_bots/run_batch_optimization.py`: Orchestrates running multiple `optimize.py` tasks in parallel for different strategy/symbol combinations, passing filter flags.
-*   `src/trading_bots/analyze_trades.py`: Analyzes trade logs (`_trades.csv`) or optimization detail summaries (`_optimize_details_*.csv`) to generate performance reports and plots.
+*   `src/trading_bots/backtest.py`: Provides the `run_backtest` function for simulating strategy performance on historical data, including **intra-bar SL/TP/TSL checks** against high/low prices and application of universal filters (ATR, Seasonality) if enabled in the `BacktestRunConfig`.
+*   `src/trading_bots/optimize.py`: Performs grid search optimization for strategy parameters defined in `config/optimize_params.yaml` (structure: `SYMBOL -> StrategyClassName -> params`).
+    *   **Efficient Combination Generation:** First, it pre-filters the grid based on command-line flags (e.g., ignores `atr_*` params if `--apply-atr-filter` is omitted). Then, it uses a smart generator to avoid creating redundant combinations based on boolean flags present *within the filtered grid* (e.g., `apply_seasonality: [true, false]`).
+    *   Uses `multiprocessing.Pool` for parallel backtests (`run_backtest_for_params`).
+    *   Saves best parameters (including strategy, risk, and filter settings) to `config/best_params.yaml` (or file specified by `--output-config`).
+    *   Saves detailed summary metrics (not full trades) to CSV in `results/optimize/details/` if `--save-details` is used.
+    *   Supports resuming (`--resume`) by checking generated parameter representations against those in the relevant details CSV.
+    *   Uses `tqdm` for progress bars.
+*   `src/trading_bots/forward_test.py`: Runs a backtest using optimized parameters (loaded from `best_params.yaml`) on a specified forward period, generating HTML reports (`reporting_utils.py`) and full trade logs (`_trades.csv` in `results/forward_test/trades/`).
+*   `src/trading_bots/run_batch_optimization.py`: Orchestrates running multiple `optimize.py` tasks in parallel for different strategy/symbol combinations, passing filter flags. (Used by `make optimize-batch`).
+*   `src/trading_bots/analyze_trades.py`: Analyzes trade logs (`_trades.csv`) or optimization detail summaries (`_optimize_details_*.csv`) to generate performance reports and plots saved to `results/analysis/`.
 *   `src/trading_bots/fetch_data.py`: Downloads historical K-line data from Binance.
 *   `src/trading_bots/technical_indicators.py`: Contains functions for calculating indicators like ATR, SMA, EMA.
-*   `config/`: Contains YAML configuration files (`optimize_params.yaml`, `best_params.yaml`, `runtime_config.yaml`). `optimize_params.yaml` now includes ranges for filter parameters.
+*   `src/trading_bots/config_models.py`: **NEW:** Contains Pydantic models (`OptimizeParamsConfig`, `BacktestRunConfig`, `RuntimeConfig`) for validating configuration data structures.
+*   `src/trading_bots/data_utils.py`: **NEW:** Contains helper functions for loading data (e.g., `load_csv_data`).
+*   `src/trading_bots/reporting_utils.py`: **NEW:** Contains helper functions for generating plots and HTML reports used by forward testing and analysis.
+*   `config/`: Contains YAML configuration files (`optimize_params.yaml`, `best_params.yaml`, `runtime_config.yaml`). `optimize_params.yaml` structure is `SYMBOL -> StrategyClassName -> params`.
 *   `results/`: Default directory for output (optimization details, forward test reports/trades, analysis results). Often gitignored.
-*   `results/optimize/details`: Directory containing detailed CSV optimization results (summary metrics only).
+*   `results/optimize/details`: Directory containing detailed CSV optimization results (summary metrics only, not full trades).
 *   `data/`: Default directory for storing downloaded CSV market data. Often gitignored.
-*   `Makefile`: Provides convenient commands for common workflows, including flags to enable filters (`APPLY_ATR_FILTER`, `APPLY_SEASONALITY_FILTER` and `TSO_` variants) and resume (`RESUME`).
+*   `Makefile`: Provides convenient commands for common workflows, including flags to enable filters (`APPLY_ATR_FILTER`, `APPLY_SEASONALITY_FILTER` and `TSO_` variants) and resume (`RESUME`). Includes targets for different optimization execution methods.
+
+**Key Concepts:**
+*   **STRATEGY_MAP:** **NEW:** Dictionary mapping short names (e.g., \"BBReversion\") to class names (e.g., `BollingerBandReversionStrategy`) used across scripts (`optimize.py`, `backtest.py`, utils) for consistency.
+*   **Configuration Models (`config_models.py`):** **NEW:** Pydantic models validate configuration structures read from YAML or passed between components.
+*   **Multiprocessing Logging:** **NEW:** Uses `QueueHandler` and `QueueListener` for safe logging from multiple processes during optimization.
+*   **Filtering Logic:** Universal filters (ATR, Seasonality) are configured via parameters in `optimize_params.yaml` and enabled/disabled via command-line flags/Makefile variables. The backtesting engine applies active filters based on the `BacktestRunConfig`.
 
 **Key Makefile Targets & Workflow:**
 1.  `make install`: Set up environment using Poetry.
 2.  `make fetch-data`: Download historical data.
 3.  `make optimize` / `make optimize-batch` / `make trigger-threaded-optimizer`: Run parameter optimization.
-    *   Flags like `APPLY_ATR_FILTER=true` / `TSO_APPLY_ATR_FILTER=true` enable corresponding filters during optimization.
-    *   `RESUME=true` (for `trigger-threaded-optimizer`) or `--resume` (`OPTIMIZE_ARGS`) enables skipping completed parameters based on existing details files.
-    *   `SAVE_DETAILS=true` / `TSO_SAVE_DETAILS=true` or `--save-details` enables saving detailed summary metrics to CSV.
-    *   `optimize`: Single strategy/symbol, parallel internal backtests.
-    *   `optimize-batch`: Multiple strategy/symbol pairs run concurrently via `run_batch_optimization.py`.
-    *   `trigger-threaded-optimizer`: Multiple strategy/symbol pairs run sequentially, each potentially using parallel internal backtests.
-4.  `make forward-test` / `make forward-test-batch`: Run backtests on a forward period using optimized parameters. Requires filter flags (`APPLY_ATR_FILTER`, etc.) to be set if filter application is desired. Generates reports and *trade logs*.
-5.  `make analyze-trades` / `make analyze-details`: Analyze results from forward tests or optimization details.
-6.  `make trader`: Run the live/simulated trading bot. Use `TRADER_ARGS` for configuration, including filter flags (`--apply-atr-filter`, `--apply-seasonality-filter`).
+    *   Flags like `APPLY_ATR_FILTER=true` / `TSO_APPLY_ATR_FILTER=true` enable corresponding filters during optimization (parameters taken from grid).
+    *   `RESUME=true` (for `trigger-threaded-optimizer`) or `--resume` (`OPTIMIZE_ARGS`) enables skipping completed parameters based on existing details CSV files in `results/optimize/details/`.
+    *   `SAVE_DETAILS=true` / `TSO_SAVE_DETAILS=true` or `--save-details` enables saving detailed summary metrics (per combination) to CSV.
+    *   `optimize`: Single strategy/symbol, parallel internal backtests (`-p N` controls core count).
+    *   `optimize-batch`: Multiple strategy/symbol pairs run concurrently via `run_batch_optimization.py` (`PROCESSES=N` controls concurrent *optimizations*).
+    *   `trigger-threaded-optimizer`: Multiple strategy/symbol pairs run sequentially, each potentially using parallel internal backtests (`TSO_PROCESSES=N` controls cores *per task*).
+4.  `make forward-test` / `make forward-test-batch`: Run backtests on a forward period using optimized parameters from `best_params.yaml`. Filter flags (`APPLY_ATR_FILTER`, etc.) must be set if filter application (using optimized filter params) is desired. Generates reports and full *trade logs*.
+5.  `make analyze-trades` / `make analyze-details`: Analyze results from forward tests (trade logs) or optimization (summary details CSVs).
+6.  `make trader`: Run the live/simulated trading bot. Use `TRADER_ARGS` for initial configuration (overriding `runtime_config.yaml`), including filter flags (`--apply-atr-filter`, etc.). Bot reloads `runtime_config.yaml` periodically.
 7.  `make lint` / `make format`: Code quality checks.
-
 **Notes:**
-*   Project uses Poetry for dependency management.
+*   Project uses Poetry for dependency management (Python >= 3.11).
 *   Code includes type hints and is checked with MyPy.
 *   Live trading requires API keys (env vars or AWS Secrets Manager).
-*   Be mindful of the distinction between optimization (`optimize.py`) and forward testing (`forward_test.py`) regarding output files (especially trade logs vs. summary detail CSVs).
-*   Universal filters (ATR, Seasonality) need to be explicitly enabled via command-line arguments or Makefile variables for `optimize`, `forward-test`, and `trader` commands if their use is intended. Filter parameters themselves are generally read from config files (`optimize_params.yaml`, `best_params.yaml`, `runtime_config.yaml`). 
+*   Be mindful of the distinction between optimization (`optimize.py`) output (summary metrics CSV if `--save-details`) and forward testing (`forward_test.py`) output (full trade logs CSV).
+*   Universal filters (ATR, Seasonality) need to be explicitly enabled via command-line arguments or Makefile variables for `optimize`, `forward-test`, and `trader` commands if their use is intended. Filter parameters themselves are generally read from config files (`optimize_params.yaml`, `best_params.yaml`, `runtime_config.yaml`).

@@ -126,30 +126,29 @@ Use `make help` to see available commands and default variable values.
         make optimize OPTIMIZE_ARGS="--strategy MACross --symbol BTCUSDT --file data/1d/BTCUSDT_1d.csv --metric sharpe_ratio --save-details --balance 10000 --commission 7.5 -p 6 --apply-atr-filter --apply-seasonality-filter"
         ```
         *   Use the `-p N` argument within `OPTIMIZE_ARGS` to specify the number of cores for backtesting *within* this single optimization run.
-        *   Use `--apply-atr-filter` and `--apply-seasonality-filter` to enable the universal filters during optimization. Their parameters (`atr_filter_*`, `seasonality_*`) will be taken from the `config/optimize_params.yaml` grid.
+        *   Use `--apply-atr-filter` and `--apply-seasonality-filter` to enable the universal filters during optimization. Their parameters (`atr_filter_*`, `seasonality_*`) will be taken from the `config/optimize_params.yaml` grid if defined.
     *   **Batch Run (Parallel Optimizations - `optimize-batch`):** Runs *multiple independent optimization tasks* (for different strategies and/or symbols) *concurrently* using multiprocessing managed by `run_batch_optimization.py`.
         ```bash
         # Batch optimize RSIReversion and BBReversion for XRP/ETH hourly, minimizing Max Drawdown, applying filters
-        make optimize-batch STRATEGIES="RSIReversion BBReversion" SYMBOLS="XRPUSDT ETHUSDT" INTERVAL=1h METRIC=max_drawdown START_DATE=2020-01-01 END_DATE=2022-12-31 BALANCE=25000 COMMISSION=5 SAVE_DETAILS=true APPLY_ATR_FILTER=true APPLY_SEASONALITY_FILTER=true
+        make optimize-batch STRATEGIES="RSIReversion BBReversion" SYMBOLS="XRPUSDT ETHUSDT" INTERVAL=1h METRIC=max_drawdown START_DATE=2020-01-01 END_DATE=2022-12-31 BALANCE=25000 COMMISSION=5 SAVE_DETAILS=true APPLY_ATR_FILTER=true APPLY_SEASONALITY_FILTER=true PROCESSES=4
         ```
         *   The number of parallel optimization *processes* is controlled by the `PROCESSES` variable in the Makefile (passed to `run_batch_optimization.py`).
         *   Use `APPLY_ATR_FILTER=true` and `APPLY_SEASONALITY_FILTER=true` Makefile variables to enable filters for all batch jobs.
     *   **Batch Run (Sequential Trigger - `trigger-threaded-optimizer`):** Runs optimization for multiple strategy/symbol combinations *sequentially*. For each combination, it calls `make optimize`, which in turn runs `optimize.py` potentially using multiple cores for its internal backtests (controlled by `TSO_PROCESSES` variable).
         ```bash
         # Sequentially optimize RSIReversion and BBReversion for XRP/ETH hourly, applying filters, using TSO_ variables
-        make trigger-threaded-optimizer TSO_STRATEGIES="RSIReversion BBReversion" TSO_SYMBOLS="XRPUSDT ETHUSDT" TSO_INTERVAL=1h TSO_METRIC=sharpe_ratio TSO_BALANCE=5000 TSO_SAVE_DETAILS=true TSO_PROCESSES=4 TSO_APPLY_ATR_FILTER=true TSO_APPLY_SEASONALITY_FILTER=true
+        make trigger-threaded-optimizer TSO_STRATEGIES="RSIReversion BBReversion" TSO_SYMBOLS="XRPUSDT ETHUSDT" TSO_INTERVAL=1h TSO_METRIC=sharpe_ratio TSO_BALANCE=5000 TSO_SAVE_DETAILS=true TSO_PROCESSES=4 TSO_APPLY_ATR_FILTER=true TSO_APPLY_SEASONALITY_FILTER=true RESUME=true
         ```
         *   The `TSO_PROCESSES` variable controls the number of cores used by the underlying `optimize.py` script for *each* sequential optimization task.
         *   Use `TSO_APPLY_ATR_FILTER=true` and `TSO_APPLY_SEASONALITY_FILTER=true` Makefile variables.
         *   Provides a `tqdm` progress bar showing completion status, rate, and ETA for each optimization task.
-    *   Configure parameter search ranges, including filters (`atr_*`, `seasonality_*`), risk management (`stop_loss_pct`, etc.), and strategy specifics, in `config/optimize_params.yaml`.
+    *   Configure parameter search ranges, including filters (`atr_*`, `seasonality_*`), risk management (`stop_loss_pct`, etc.), and strategy specifics, in `config/optimize_params.yaml`. Structure is `SYMBOL -> StrategyClassName -> params`.
     *   Specify the optimization target using `METRIC=` or `TSO_METRIC=` (Makefile variables) or `--metric` (`OPTIMIZE_ARGS`). Choices: `cumulative_profit`, `final_balance`, `sharpe_ratio`, `profit_factor`, `max_drawdown`, `win_rate`.
-    *   Use `SAVE_DETAILS=true` or `TSO_SAVE_DETAILS=true` (Makefile variables) or `--save-details` (`OPTIMIZE_ARGS`) to save all tested combinations to a CSV file in `results/optimization/`.
-    *   The details CSV contains only summary metrics for each parameter combination, not the full trade log.
-    *   Use `--resume` (or `RESUME=true` in `trigger-threaded-optimizer`) to skip parameters already present in the latest matching details file for that strategy/symbol/filter combination. If `--details-file` is specified, it resumes from that exact file.
+    *   Use `SAVE_DETAILS=true` or `TSO_SAVE_DETAILS=true` (Makefile variables) or `--save-details` (`OPTIMIZE_ARGS`) to save summary metrics for all tested combinations to a CSV file in `results/optimize/details/`.
+    *   Use `--resume` (or `RESUME=true` in `trigger-threaded-optimizer`) to skip parameters already present in the latest matching details file in `results/optimize/details/` for that strategy/symbol/date range.
     *   Set initial balance using `BALANCE=` or `TSO_BALANCE=` or `--balance`.
     *   Best parameters (including filters, SL/TP/TSL, and trend filter choice) are saved to `--output-config` (default: `config/best_params.yaml`).
-*   **Run Simulated Forward Test:** Runs the backtester using the best parameters found during optimization (from `config/best_params.yaml`) on a *different* historical data period. Generates reports and saves trade logs.
+*   **Run Simulated Forward Test:** Runs the backtester using the best parameters found during optimization (from `config/best_params.yaml`) on a *different* historical data period. Generates reports and saves **full trade logs**.
     *   **Single Run:**
         ```bash
         # Test optimized MACross for BTCUSDT on data from 2023-01-01 onwards, applying filters based on best_params.yaml
@@ -164,12 +163,12 @@ Use `make help` to see available commands and default variable values.
     *   **Important:** Filters (`--apply-atr-filter`, `--apply-seasonality-filter`) must be explicitly enabled in `FWD_ARGS` or the Makefile variables (`APPLY_ATR_FILTER`, `APPLY_SEASONALITY_FILTER`) if you want to use the optimized filter settings during the forward test. The script reads the *best* parameters for the filters from the config, but only applies them if the corresponding flag is passed.
     *   Set initial balance using `BALANCE=` or `--balance`.
     *   Generates HTML reports (with metrics and plots) in `results/forward_test/reports/`.
-    *   Saves detailed trade logs (`_trades.csv`) in `results/forward_test/trades/`.
+    *   Saves detailed **trade logs** (`_trades.csv`) in `results/forward_test/trades/`.
 *   **Analyze Results:** Analyze trade logs or optimization detail files.
     ```bash
-    # Analyze all trade logs found in results/optimization/trades/ and generate reports/plots
+    # Analyze all forward test trade logs found in results/forward_test/trades/ and generate reports/plots
     make analyze-trades 
-    # Analyze optimization detail CSVs found in results/optimization/ and generate summary report/plot
+    # Analyze optimization detail summary CSVs found in results/optimize/details/ and generate summary report/plot
     make analyze-details
     # Analyze only a specific strategy/symbol trade log
     make analyze-trades ANALYZE_ARGS="--strategy RSIReversion --symbol BTCUSDT"
@@ -188,7 +187,7 @@ Use `make help` to see available commands and default variable values.
     *   Use `--stop-loss`, `--take-profit`, `--trailing-stop-loss`, `--max-cum-loss` to enable risk management.
     *   Use `--apply-atr-filter` and related `--atr-filter-*` arguments to enable and configure the ATR filter.
     *   Use `--apply-seasonality-filter` and `--allowed-trading-hours-utc` (and optionally `--apply-seasonality-to-symbols`) to enable and configure the seasonality filter.
-    *   **Runtime Configuration:** Edit the `--runtime-config` file (default: `config/runtime_config.yaml`) to change `strategy_name`, `strategy_params`, risk management settings, and *filter settings* (`apply_atr_filter`, `atr_*`, `apply_seasonality_filter`, `allowed_trading_hours_utc`, etc.). Changes are checked periodically and applied if the bot is flat.
+    *   **Runtime Configuration:** Edit the `--runtime-config` file (default: `config/runtime_config.yaml`) to change `strategy_name`, `strategy_params`, risk management settings, and *filter settings* (`apply_atr_filter`, `atr_*`, `apply_seasonality_filter`, `allowed_trading_hours_utc`, etc.). Changes are checked periodically and applied if the bot is flat (not in position).
 *   **Linting:** `make lint`
 *   **Formatting:** `make format` (Runs Black code formatter)
 *   **Clean:** `make clean`
@@ -197,10 +196,10 @@ Use `make help` to see available commands and default variable values.
 
 *   `config/best_params.yaml`: Stores the best parameters found by optimization for each symbol/strategy combination.
 *   `results/optimization/`: Contains detailed CSV logs of *all* combinations tested during optimization if `SAVE_DETAILS=true` is used.
-*   `results/optimization/details/`: Contains detailed CSV logs (summary metrics only) of *all* combinations tested during optimization if `SAVE_DETAILS=true` is used.
+*   `results/optimization/details/`: Contains detailed CSV logs (**summary metrics** only) of *all* combinations tested during optimization if `SAVE_DETAILS=true` is used.
 *   `results/forward_test/reports/`: Contains HTML reports summarizing forward test performance, including metrics and equity curve plots.
 *   `results/forward_test/plots/`: PNG images of equity curves from forward tests.
-*   `results/forward_test/trades/`: CSV files detailing the trades made during each forward test.
+*   `results/forward_test/trades/`: CSV files detailing the **individual trades** made during each forward test.
 *   `results/analysis/`: Contains aggregated summaries, plots, and reports generated by `analyze-trades` and `analyze-details`.
 
 ## Adding New Strategies
@@ -208,10 +207,9 @@ Use `make help` to see available commands and default variable values.
 1.  Create a new Python file in `src/trading_bots/strategies/` (e.g., `my_strategy.py`).
 2.  Define a class inheriting from `src.trading_bots.strategies.base_strategy.Strategy`.
 3.  Implement the `__init__` method to accept parameters.
-4.  Implement the `generate_signals(self, data: pd.DataFrame) -> pd.Series` method. It should return a pandas Series with the same index as the input data, containing integers: `1` for long, `-1` for short, `0` for neutral.
-5.  Add the new strategy class to `src/trading_bots/strategies/__init__.py` (imports and `__all__`).
-6.  Add parameter search ranges to `config/optimize_params.yaml` for the new strategy under the desired symbols.
-7.  (Optional) Add the strategy choice to the `
+4.  Implement the `generate_signals(self, data: pd.DataFrame) -> pd.DataFrame` method. It should add a `signal` column (1=long, -1=short, 0=neutral) to the input DataFrame and return the modified DataFrame.
+5.  Add the new strategy class name to the `STRATEGY_MAP` dictionary in `src/trading_bots/optimize.py`, `src/trading_bots/backtest.py`, and any relevant utility scripts.
+6.  Add parameter search ranges to `config/optimize_params.yaml` under the desired symbols, using the new strategy's **class name** as the key.
 
 ## License
 
