@@ -53,6 +53,9 @@ ALLOWED_TRADING_HOURS_UTC ?= "" # e.g., '5-17'
 APPLY_SEASONALITY_TO_SYMBOLS ?=  # Ensure this defaults to completely empty
 # --- End Filter Parameters ---
 
+# Default number of processes for fetching data
+FETCH_PROCESSES ?= 6
+
 # Arguments for single runs (override completely on command line)
 # OPTIMIZE_ARGS is no longer used by the optimize target directly, but kept for reference/manual runs if needed
 OPTIMIZE_ARGS ?= --strategy RSIReversion --symbol BTCUSDT --file data/1h/BTCUSDT_1h.csv --metric cumulative_profit --balance 10000 --commission 7.5 --opt-start 2021-01-01 --opt-end 2022-12-31 # Default example
@@ -249,7 +252,7 @@ fetch-data:
 	#   --start '2017-01-01' \
 	#   --end '2024-01-01' \
 	#   --data-dir ./historical_data" # (Note: FETCH_ARGS uses a single string)
-	$(POETRY) run $(PYTHON_CMD) -m src.trading_bots.fetch_data $(FETCH_ARGS)
+	$(POETRY) run $(PYTHON_CMD) -m src.trading_bots.fetch_data $(FETCH_ARGS) --processes $(FETCH_PROCESSES)
 
 ## Run simulated forward test (single run)
 forward-test:
@@ -335,8 +338,8 @@ help:
 	@echo "                      Example: make optimize STRATEGY=BBReversion SYMBOL=SOLUSDT METRIC=sharpe_ratio SAVE_DETAILS=true"
 	@echo "  make optimize-batch - Run batch optimization for multiple strategies/symbols (use make VAR=value overrides)"
 	@echo "                      Example: make optimize-batch STRATEGIES=\"BBReversion MACross\" SYMBOLS=\"SOLUSDT ADAUSDT\" METRIC=profit_factor SAVE_DETAILS=true"
-	@echo "  make fetch-data     - Fetch historical data from Binance (use FETCH_ARGS=...)"
-	@echo "                      Example: make fetch-data FETCH_ARGS=\"--symbols 'BTCUSDT ETHUSDT' --interval 1d --start '2017-01-01'\""
+	@echo "  make fetch-data     - Fetch historical data from Binance (use FETCH_ARGS=... and FETCH_PROCESSES=N)"
+	@echo "                      Example: make fetch-data FETCH_ARGS=\"--symbols 'BTCUSDT ETHUSDT' --interval 1d --start '2017-01-01'\" FETCH_PROCESSES=8"
 	@echo "  make forward-test   - Run single simulated forward test (use FWD_ARGS=...)"
 	@echo "                      Example: make forward-test FWD_ARGS=\"--strategy MACross --balance 25000 --apply-atr-filter\""
 	@echo "  make forward-test-batch - Run batch forward testing for multiple strategies/symbols (use make VAR=value overrides)"

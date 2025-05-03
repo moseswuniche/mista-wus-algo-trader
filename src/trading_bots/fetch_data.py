@@ -3,8 +3,9 @@ import pandas as pd
 from datetime import datetime
 import time
 import argparse
-from typing import List, Optional
+from typing import List, Optional, Dict, Tuple
 import logging
+from multiprocessing import Pool, cpu_count
 
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
@@ -31,6 +32,7 @@ DEFAULT_INTERVAL = Client.KLINE_INTERVAL_1DAY  # Daily data
 DEFAULT_START_DATE = "2017-01-01"
 DEFAULT_OUTPUT_DIR = "data"
 BINANCE_API_LIMIT = 1000  # Default limit per request
+DEFAULT_FETCH_PROCESSES = max(1, cpu_count() // 2)  # Use half the cores by default
 
 
 def fetch_historical_klines(
@@ -165,6 +167,65 @@ def process_klines_to_dataframe(klines: List) -> pd.DataFrame:
     return df
 
 
+# --- Worker Function for Parallel Fetching ---
+def fetch_and_save_symbol(
+    args_tuple: Tuple[str, str, str, Optional[str], str],
+) -> Tuple[str, bool, Optional[str]]:
+    """Worker function to fetch, process, and save data for a single symbol."""
+    symbol, interval, start_str, end_str, output_dir = args_tuple
+    worker_logger = logging.getLogger(
+        f"fetch_worker_{symbol}"
+    )  # Worker-specific logger
+    worker_logger.info(f"--- Starting fetch for {symbol} --- ")
+
+    try:
+        # Initialize client within the worker
+        client = Client()
+
+        # 1. Fetch data
+        klines = fetch_historical_klines(
+            client=client,
+            symbol=symbol,
+            interval=interval,
+            start_str=start_str,
+            end_str=end_str,
+        )
+
+        if not klines:
+            msg = f"No klines fetched for {symbol}. Skipping processing and saving."
+            worker_logger.warning(msg)
+            return symbol, False, msg
+
+        # 2. Process data
+        df = process_klines_to_dataframe(klines)
+
+        # 3. Save data
+        if not df.empty:
+            interval_suffix = interval
+            filename = f"{symbol}_{interval_suffix}.csv"
+            # Ensure the interval directory exists within the main output directory
+            interval_dir = os.path.join(output_dir, interval_suffix)
+            os.makedirs(interval_dir, exist_ok=True)  # Create interval subdir
+            filepath = os.path.join(interval_dir, filename)
+            worker_logger.info(f"Saving data for {symbol} to {filepath}...")
+            df.to_csv(filepath)
+            success_msg = f"Data for {symbol} saved successfully to {filepath}"
+            worker_logger.info(success_msg)
+            return symbol, True, success_msg
+        else:
+            msg = f"No data processed for {symbol}. Skipping save."
+            worker_logger.warning(msg)
+            return symbol, False, msg
+
+    except Exception as e:
+        error_msg = f"!!! Failed to process {symbol}: {e} !!!"
+        worker_logger.critical(error_msg, exc_info=True)
+        return symbol, False, error_msg
+
+
+# --- End Worker Function ---
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Fetch historical Klines from Binance."
@@ -209,55 +270,109 @@ if __name__ == "__main__":
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         help="Set the logging level. Default: INFO",
     )
+    parser.add_argument(
+        "-p",
+        "--processes",
+        type=int,
+        default=DEFAULT_FETCH_PROCESSES,
+        help=f"Number of parallel processes to use for fetching (default: {DEFAULT_FETCH_PROCESSES}).",
+    )
 
     args = parser.parse_args()
 
     # Set logging level from args
     log_level = getattr(logging, args.log.upper(), logging.INFO)
-    logging.getLogger().setLevel(log_level)  # Set root logger level
+    # Configure root logger for main process
+    logging.basicConfig(
+        level=log_level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    logger = logging.getLogger(__name__)  # Main logger
 
-    # Create output directory if it doesn't exist
+    # Create base output directory if it doesn't exist
     os.makedirs(args.output_dir, exist_ok=True)
 
-    # Initialize Binance client (no API key needed for public data)
-    client = Client()
+    # Initialize Binance client (no API key needed for public data) - MOVED TO WORKER
+    # client = Client()
 
-    logger.info(f"Starting data fetch with args: {args}")
+    logger.info(f"Starting parallel data fetch with args: {args}")
 
+    # --- Prepare arguments for workers ---
+    tasks = []
     for symbol in args.symbols:
-        logger.info(f"--- Processing {symbol} --- ")
-        try:
-            # Fetch data
-            klines = fetch_historical_klines(
-                client=client,
-                symbol=symbol,
-                interval=args.interval,
-                start_str=args.start,
-                end_str=args.end,
-            )
+        tasks.append((symbol, args.interval, args.start, args.end, args.output_dir))
 
-            if not klines:
-                logger.warning(
-                    f"No klines fetched for {symbol}. Skipping processing and saving."
-                )
-                continue
+    # --- Run tasks in parallel ---
+    num_processes = min(
+        args.processes, len(tasks)
+    )  # Don't use more processes than tasks
+    logger.info(
+        f"Fetching data for {len(tasks)} symbols using {num_processes} processes..."
+    )
 
-            # Process data
-            df = process_klines_to_dataframe(klines)
+    successful_fetches = 0
+    failed_fetches = 0
 
-            # Save data
-            if not df.empty:
-                interval_suffix = args.interval
-                filename = f"{symbol}_{interval_suffix}.csv"
-                filepath = os.path.join(args.output_dir, filename)
-                logger.info(f"Saving data for {symbol} to {filepath}...")
-                df.to_csv(filepath)
-                logger.info(f"Data for {symbol} saved successfully to {filepath}")
+    try:
+        with Pool(processes=num_processes) as pool:
+            results = pool.map(fetch_and_save_symbol, tasks)
+
+        logger.info("--- Processing fetch results ---")
+        for symbol, success, message in results:
+            if success:
+                successful_fetches += 1
+                # Main logger can still log success if needed, or rely on worker logs
+                # logger.info(message)
             else:
-                logger.warning(f"No data processed for {symbol}. Skipping save.")
+                failed_fetches += 1
+                logger.error(f"Fetch failed for {symbol}: {message}")
 
-        except Exception as e:
-            logger.critical(f"!!! Failed to process {symbol}: {e} !!!", exc_info=True)
-            continue
+    except Exception as e:
+        logger.critical(
+            f"Error during parallel fetching pool execution: {e}", exc_info=True
+        )
+        failed_fetches = len(tasks)  # Assume all failed if pool crashed
 
+    # --- Summary ---
+    logger.info("--- Data Fetching Process Summary ---")
+    logger.info(f"  Total symbols attempted: {len(tasks)}")
+    logger.info(f"  Successful fetches:      {successful_fetches}")
+    logger.info(f"  Failed fetches:          {failed_fetches}")
     logger.info("--- Data fetching process finished. ---")
+
+    # --- Old Sequential Logic (Removed) ---
+    # for symbol in args.symbols:
+    #     logger.info(f"--- Processing {symbol} --- ")
+    #     try:
+    #         # Fetch data
+    #         klines = fetch_historical_klines(
+    #             client=client,
+    #             symbol=symbol,
+    #             interval=args.interval,
+    #             start_str=args.start,
+    #             end_str=args.end,
+    #         )
+    #
+    #         if not klines:
+    #             logger.warning(
+    #                 f"No klines fetched for {symbol}. Skipping processing and saving."
+    #             )
+    #             continue
+    #
+    #         # Process data
+    #         df = process_klines_to_dataframe(klines)
+    #
+    #         # Save data
+    #         if not df.empty:
+    #             interval_suffix = args.interval
+    #             filename = f"{symbol}_{interval_suffix}.csv"
+    #             filepath = os.path.join(args.output_dir, filename)
+    #             logger.info(f"Saving data for {symbol} to {filepath}...")
+    #             df.to_csv(filepath)
+    #             logger.info(f"Data for {symbol} saved successfully to {filepath}")
+    #         else:
+    #             logger.warning(f"No data processed for {symbol}. Skipping save.")
+    #
+    #     except Exception as e:
+    #         logger.critical(f"!!! Failed to process {symbol}: {e} !!!", exc_info=True)
+    #         continue
+    # logger.info("--- Data fetching process finished. ---")
