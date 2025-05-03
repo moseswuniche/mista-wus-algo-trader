@@ -12,6 +12,7 @@ Features include:
 - **Parallel** Grid search parameter optimization (`optimize.py`)
   - Parameter grids defined in `config/optimize_params.yaml`, including SL/TP/TSL and optional trend filter.
   - Best parameters (including SL/TP/TSL, trend filter) saved to `config/best_params.yaml`.
+  - **Efficient Generation:** Skips redundant combinations where controlling flags (e.g., `apply_atr_filter`) are False but dependent parameters vary, significantly speeding up optimization runs with filters enabled.
 - **Parallel** Batch optimization for multiple strategies/symbols (`run_batch_optimization.py`) - *[Review/update completed]*
 - **Sequential** Batch optimization via `make trigger-threaded-optimizer`
 - Optimization based on selectable performance metrics
