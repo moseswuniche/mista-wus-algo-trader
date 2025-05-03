@@ -663,111 +663,223 @@ def optimize_strategy(
         )
         return None, None
 
-    # --- Calculate Total Possible Combinations (Before Deduplication) ---
-    param_names = list(param_grid.keys())
-    param_value_lists = list(param_grid.values())
-    total_possible_combinations = 1
-    if param_value_lists:
-        try:
-            for value_list in param_value_lists:
-                total_possible_combinations *= len(value_list)
-        except Exception as e:
-            logger.error(f"Error calculating total combinations: {e}", exc_info=True)
-            total_possible_combinations = 0  # Fixed indentation
-    else:
-        total_possible_combinations = 0
-    logger.info(
-        f"Total possible parameter combinations (before deduplication): {total_possible_combinations}"
-    )
+    # --- Define Flags and Dependencies ---
+    # Identify boolean flags and the parameters that depend on them
+    # This might need adjustment if parameter names change
+    flags_and_deps = {
+        "apply_atr_filter": [
+            "atr_filter_period",
+            "atr_filter_multiplier",
+            "atr_filter_sma_period",
+        ],
+        "apply_seasonality_filter": [
+            "allowed_trading_hours_utc",
+            "apply_seasonality_to_symbols",
+        ],
+        # Add other flags and dependencies here if needed
+    }
 
-    if total_possible_combinations == 0:
-        logger.warning(
-            f"No valid parameter combinations generated for {strategy_class_name} on {symbol}. Skipping."
+    # Separate grid into flags, dependents, and independents
+    flag_grid = {k: param_grid.pop(k) for k in flags_and_deps if k in param_grid}
+    dependent_params = {
+        dep: param_grid.pop(dep)
+        for flag, deps in flags_and_deps.items()
+        for dep in deps
+        if dep in param_grid
+    }
+    independent_params = param_grid  # Remaining params are independent
+
+    # --- Helper Function for Smart Combination Generation ---
+    def generate_smart_combinations(
+        flag_grid, dependent_params, independent_params, flags_and_deps
+    ):
+        independent_names = list(independent_params.keys())
+        independent_values = list(independent_params.values())
+        independent_combinations = list(itertools.product(*independent_values))
+
+        flag_names = list(flag_grid.keys())
+        flag_values = list(flag_grid.values())
+        flag_combinations = list(itertools.product(*flag_values))
+
+        total_combinations = 0
+        generated_count = 0
+
+        for flag_combo_values in flag_combinations:
+            flag_combo_dict = dict(zip(flag_names, flag_combo_values))
+
+            # Identify active dependent parameters for this flag combination
+            active_dependent_params = {}
+            fixed_dependent_params = {}
+            for flag_name, is_active in flag_combo_dict.items():
+                deps = flags_and_deps.get(flag_name, [])
+                for dep_name in deps:
+                    if dep_name in dependent_params:
+                        if is_active:
+                            active_dependent_params[dep_name] = dependent_params[
+                                dep_name
+                            ]
+                        else:
+                            # If flag is inactive, use a fixed value (e.g., the first one)
+                            # This ensures only one combination per inactive flag state
+                            fixed_dependent_params[dep_name] = dependent_params[
+                                dep_name
+                            ][
+                                0
+                            ]  # Use the first value as default
+
+            active_dep_names = list(active_dependent_params.keys())
+            active_dep_values = list(active_dependent_params.values())
+
+            if active_dependent_params:
+                dependent_combinations = itertools.product(*active_dep_values)
+            else:
+                dependent_combinations = [()]  # Empty tuple if no active dependents
+
+            for dep_combo_values in dependent_combinations:
+                active_dep_combo_dict = dict(zip(active_dep_names, dep_combo_values))
+
+                for indep_combo_values in independent_combinations:
+                    indep_combo_dict = dict(zip(independent_names, indep_combo_values))
+
+                    # Combine all parts
+                    final_params = {
+                        **flag_combo_dict,
+                        **fixed_dependent_params,  # Add fixed values for inactive flags
+                        **active_dep_combo_dict,  # Add varying values for active flags
+                        **indep_combo_dict,  # Add independent params
+                    }
+                    total_combinations += 1
+                    yield final_params
+
+        logger.info(
+            f"Estimated total unique combinations to test: {total_combinations}"
         )
-        return None, None
 
-    # --- Generate Unique Parameter Combinations and Deduplicate On-the-Fly ---
-    unique_rep_to_params_map: Dict[tuple, Dict[str, Any]] = (
-        {}
-    )  # Stores rep -> params_dict for unique combinations
-    combination_iterator = itertools.product(*param_value_lists)
+    # --- Generate Unique Parameter Combinations Using Smart Generator ---
+    unique_rep_to_params_map: Dict[tuple, Dict[str, Any]] = {}
+    # Use the new generator
+    smart_combination_generator = generate_smart_combinations(
+        flag_grid, dependent_params, independent_params, flags_and_deps
+    )
     generated_count = 0
 
-    logger.info("Generating and deduplicating parameter combinations...")
-    # Iterate through all possible combinations
-    for i, combination_values in enumerate(combination_iterator):
+    logger.info("Generating and deduplicating unique parameter combinations...")
+    # Iterate through the combinations yielded by the smart generator
+    for i, params in enumerate(smart_combination_generator):
         generated_count += 1
-        # Construct the dictionary for this specific combination
-        params = dict(zip(param_names, combination_values))
 
         # Special handling for LongShortStrategy tuple params (if needed)
+        # IMPORTANT: Ensure keys like 'return_thresh_low' are in the correct grid part (independent/dependent)
+        # This might need adjustment based on how these are defined in your YAML.
+        # Assuming they are independent for now.
         if strategy_class_name == "LongShortStrategy":
             rt_low = params.pop("return_thresh_low", None)
             rt_high = params.pop("return_thresh_high", None)
             vt_low = params.pop("volume_thresh_low", None)
             vt_high = params.pop("volume_thresh_high", None)
             if rt_low is not None and rt_high is not None:
-                params["return_thresh"] = (rt_low, rt_high)
+                # Check if original tuple params were intended
+                if (
+                    "return_thresh" not in params
+                ):  # Avoid overwriting if tuple was direct param
+                    params["return_thresh"] = (rt_low, rt_high)
             if vt_low is not None and vt_high is not None:
-                params["volume_thresh"] = (vt_low, vt_high)
+                if "volume_thresh" not in params:  # Avoid overwriting
+                    params["volume_thresh"] = (vt_low, vt_high)
 
         # Create the hashable representation for deduplication
         rep = params_to_tuple_rep(params, precision=8)  # Use desired precision
 
-        # --- DEBUG LOGGING ---\
+        # --- DEBUG LOGGING ---
         # <<< Log first few generated reps >>>
         if i < 5:
             logger.debug(f"Generated Param Set [{i}]: Params={repr(params)}, Rep={rep}")
         # Log the params dict and its representation periodically
-        log_interval = max(1, total_possible_combinations // 100)  # Log ~100 times
-        # if i < 20 or i % log_interval == 0: # Keep this line if you still want periodic logging
-        #     logger.debug(f"Dedupe Check [{i}]: Params={repr(params)}, Rep={rep}")
-        # --- END DEBUG LOGGING ---
+        # Adjust logging frequency if needed, as total count is now different
+        log_interval = 500  # Log every 500 generated combinations
+        if generated_count % log_interval == 0:
+            logger.debug(f"Generated {generated_count} combinations so far...")
 
-        # Store the rep and params dict if the rep hasn't been seen
-        # setdefault returns the existing value if key exists, otherwise sets the value and returns it
-        existing = unique_rep_to_params_map.setdefault(rep, params)
+        # Check if this combination representation has already been processed
+        if rep in unique_rep_to_params_map:
+            # logger.debug(f"Skipping duplicate param rep: {rep}") # Can be verbose
+            continue  # Skip this duplicate combination
 
-        # Optional: Log when a duplicate is found (can be very verbose)
-        # if existing is not params: # Check if setdefault added a new item or found existing
-        #     logger.debug(f"Duplicate rep encountered: {rep}")
+        # Check if this combination was already completed in a previous run (resuming)
+        if rep in completed_param_reps:
+            logger.debug(f"Skipping already completed param rep (resume): {rep}")
+            continue
 
-    # --- End Deduplication ---
+        # Store the unique combination representation and its parameter dictionary
+        unique_rep_to_params_map[rep] = params
+        # Log newly found unique combinations if desired
+        # logger.debug(f"Found unique param rep [{len(unique_rep_to_params_map)}]: {rep}")
 
-    # Extract the unique parameter dictionaries from the map
-    unique_params_for_backtest = list(unique_rep_to_params_map.values())
-    unique_combinations_count = len(unique_params_for_backtest)
-    duplicate_count = generated_count - unique_combinations_count
-
-    logger.info(f"Generated {generated_count} total combinations.")
+    # --- Calculate final counts after smart generation and internal dedupe ---
+    total_unique_combinations_to_run = len(unique_rep_to_params_map)
+    # Note: generated_count is the number of items yielded by the generator before the final dedupe check
+    # The number of *actually unique* items after the `if rep in unique_rep_to_params_map:` check is total_unique_combinations_to_run
+    # If generate_smart_combinations *perfectly* avoids all duplicates, generated_count == total_unique_combinations_to_run
+    # If generate_smart_combinations yields some duplicates that params_to_tuple_rep catches, then generated_count >= total_unique_combinations_to_run
+    logger.info(f"Smart generator yielded {generated_count} combinations.")
     logger.info(
-        f"Deduplication complete: {unique_combinations_count} unique combinations identified for backtesting."
+        f"Deduplication complete: {total_unique_combinations_to_run} unique combinations identified for backtesting."
     )
+    duplicate_count = generated_count - total_unique_combinations_to_run
     if duplicate_count > 0:
-        logger.info(f"  ({duplicate_count} duplicate combinations ignored)")
+        logger.info(
+            f"  ({duplicate_count} duplicate combinations ignored by final check)"
+        )
+
+    # Extract the unique parameter dictionaries from the map (use the map populated by the smart generator loop)
+    unique_params_for_backtest = list(unique_rep_to_params_map.values())
+    # unique_combinations_count is now total_unique_combinations_to_run, defined earlier
+    # duplicate_count is also defined earlier
 
     # DEBUG: Log a sample of the unique list before submitting jobs
-    logger.debug(
-        f"Sample of unique_params_for_backtest[0]: {unique_params_for_backtest[0]}"
-    )
-    if len(unique_params_for_backtest) > 1:
+    if unique_params_for_backtest:  # Check if list is not empty
         logger.debug(
-            f"Sample of unique_params_for_backtest[1]: {unique_params_for_backtest[1]}"
+            f"Sample of unique_params_for_backtest[0]: {unique_params_for_backtest[0]}"
+        )
+        if len(unique_params_for_backtest) > 1:
+            logger.debug(
+                f"Sample of unique_params_for_backtest[1]: {unique_params_for_backtest[1]}"
+            )
+    else:
+        logger.warning(
+            "unique_params_for_backtest list is empty after generation and deduplication."
         )
 
-    if unique_combinations_count == 0 and total_possible_combinations > 0:
+    # This check needs adjustment, as total_possible_combinations is no longer reliable
+    if (
+        total_unique_combinations_to_run == 0 and generated_count > 0
+    ):  # Check if generator yielded items but all were duplicates
         logger.error(
-            "Error: All combinations were considered duplicates. Check params_to_tuple_rep or generation logic."
+            "Error: All generated combinations were considered duplicates by the final check. Check params_to_tuple_rep or generation logic."
         )
         return None, None
+    elif (
+        total_unique_combinations_to_run == 0 and generated_count == 0
+    ):  # Check if generator yielded nothing
+        logger.warning(
+            f"No parameter combinations generated for {strategy_class_name} on {symbol}. Check param grid and generation logic."
+        )
+        return None, None  # Explicitly return None, None if generator was empty
 
     # --- Filter unique_params_for_backtest based on completed_param_reps ---
     if completed_param_reps:
-        initial_unique_count = len(unique_params_for_backtest)
+        initial_unique_count = len(
+            unique_params_for_backtest
+        )  # Now uses the correct list
         params_to_run = []
         skipped_count = 0
-        logger.debug(f"--- Starting Check: Comparing {len(unique_params_for_backtest)} generated params against {len(completed_param_reps)} loaded reps ---")
-        for i, params in enumerate(unique_params_for_backtest): # Added enumerate for index i
+        # Use total_unique_combinations_to_run for the check message
+        logger.debug(
+            f"--- Starting Check: Comparing {total_unique_combinations_to_run} generated params against {len(completed_param_reps)} loaded reps ---"
+        )
+        for i, params in enumerate(
+            unique_params_for_backtest
+        ):  # Added enumerate for index i
             rep = params_to_tuple_rep(params)
             found_in_completed = rep in completed_param_reps
             if found_in_completed:
@@ -778,20 +890,30 @@ def optimize_strategy(
         logger.debug(f"--- Finished Check: Total Skipped={skipped_count} ---")
 
         unique_params_for_backtest = params_to_run  # Replace with the filtered list
-        unique_combinations_count = len(unique_params_for_backtest)  # Update count
+        # Update the count of combinations *actually* needing a run
+        unique_combinations_to_run_count = len(unique_params_for_backtest)
         logger.info(
             f"Resume: Skipped {skipped_count} already completed parameters found in details file."
         )
-        logger.info(f"Resume: {unique_combinations_count} parameters remaining to run.")
+        # Log the final count remaining to run
+        logger.info(
+            f"Resume: {unique_combinations_to_run_count} parameters remaining to run."
+        )
+    else:
+        # If not resuming, the number to run is the total unique count
+        unique_combinations_to_run_count = total_unique_combinations_to_run
     # --- End filtering ---
 
     # Check if there's anything left to run
-    if unique_combinations_count == 0:
+    # Use the potentially updated count after filtering
+    if unique_combinations_to_run_count == 0:
         logger.warning(
             f"No parameter combinations left to run for {strategy_class_name} on {symbol} (either none generated or all were previously completed). Skipping backtesting."
         )
         # Need to handle finding the best result from the *existing* file if resuming
-        if completed_param_reps:
+        if (
+            completed_param_reps and details_filepath
+        ):  # Check details_filepath exists too
             logger.info(
                 f"Attempting to find best result from existing file: {details_filepath}"
             )
@@ -819,7 +941,8 @@ def optimize_strategy(
         Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]
     ] = []
     logger.info(
-        f"Starting parallel backtesting for {unique_combinations_count} unique combinations using {num_processes} processes..."
+        # Use the count of parameters actually being run
+        f"Starting parallel backtesting for {unique_combinations_to_run_count} unique combinations using {num_processes} processes..."
     )
 
     # --- Define arguments for the initializer ---
@@ -859,9 +982,10 @@ def optimize_strategy(
 
             # <<< USE imap_unordered to process results as they complete >>>
             logger.critical(
-                f"--- SUBMITTING {len(unique_params_for_backtest)} UNIQUE TASKS TO POOL NOW ---"
+                # Use the count of parameters actually being run
+                f"--- SUBMITTING {unique_combinations_to_run_count} UNIQUE TASKS TO POOL NOW ---"
             )
-            # --- END ADDED MARKER ---
+            # Pass the filtered list unique_params_for_backtest to imap
             imap_results = pool.imap_unordered(
                 run_backtest_for_params, unique_params_for_backtest
             )
@@ -869,12 +993,13 @@ def optimize_strategy(
             # Process results iteratively
             processed_unique_count = 0  # Counter for results processed from iterator
             successful_unique_count = 0  # <-- INITIALIZE COUNTER
-            total_results_to_process = (
-                unique_combinations_count  # Total expected results
-            )
-            results_log_interval = max(
-                1, total_results_to_process // 20
-            )  # Log ~20 times
+            # Use the count of params actually being run as the total
+            total_results_to_process = unique_combinations_to_run_count
+            results_log_interval = (
+                max(1, total_results_to_process // 20)
+                if total_results_to_process > 0
+                else 1
+            )  # Avoid division by zero
 
             # <<< ADDED INITIALIZATION FOR BEST RESULT TRACKING >>>
             minimize_metric = optimization_metric in [
@@ -915,7 +1040,7 @@ def optimize_strategy(
             # --- Initialize for Incremental CSV Saving (if enabled) ---
             results_batch: List[Dict[str, Any]] = []
             # Removed parquet_writer
-            BATCH_SIZE = 1  # <-- CHANGED BATCH SIZE TO 5000
+            BATCH_SIZE = 5000  # <-- CHANGED BATCH SIZE TO 5000
             # Removed pyarrow_available check and import block
             # --- End Initialization ---
 
@@ -1514,34 +1639,49 @@ def main():
         # NOTE: This duplicates loading from optimize_strategy, but is needed here
         #       to correctly infer types from the source grid when resuming.
         #       Could be refactored later to load grid once and pass it around.
-        source_param_grid_for_types = {} # Initialize as empty dict
+        source_param_grid_for_types = {}  # Initialize as empty dict
         try:
             config_file = Path(args.config)
             if not config_file.is_file():
-                raise FileNotFoundError(f"Parameter config file not found: {args.config}")
+                raise FileNotFoundError(
+                    f"Parameter config file not found: {args.config}"
+                )
             with open(config_file, "r") as f:
                 full_config = yaml.safe_load(f)
             if not isinstance(full_config, dict) or args.symbol not in full_config:
-                raise ValueError(f"Symbol '{args.symbol}' not found in config: {args.config}")
+                raise ValueError(
+                    f"Symbol '{args.symbol}' not found in config: {args.config}"
+                )
             symbol_config = full_config[args.symbol]
             strategy_class = STRATEGY_MAP[args.strategy]
             strategy_class_name = strategy_class.__name__
-            if not isinstance(symbol_config, dict) or strategy_class_name not in symbol_config:
-                raise ValueError(f"Strategy '{strategy_class_name}' not found for symbol '{args.symbol}' in {args.config}")
-            
+            if (
+                not isinstance(symbol_config, dict)
+                or strategy_class_name not in symbol_config
+            ):
+                raise ValueError(
+                    f"Strategy '{strategy_class_name}' not found for symbol '{args.symbol}' in {args.config}"
+                )
+
             # Get the specific grid for this strategy/symbol
             # We only need it for type reference, no need to process/sort/dedupe here
             grid_from_config = symbol_config[strategy_class_name]
             if not isinstance(grid_from_config, dict):
-                raise ValueError(f"Param grid for {args.symbol}/{strategy_class_name} is not a dict.")
-            source_param_grid_for_types = grid_from_config # Assign the loaded grid
-            logger.debug(f"Successfully loaded source param grid for type checking: {list(source_param_grid_for_types.keys())}")
+                raise ValueError(
+                    f"Param grid for {args.symbol}/{strategy_class_name} is not a dict."
+                )
+            source_param_grid_for_types = grid_from_config  # Assign the loaded grid
+            logger.debug(
+                f"Successfully loaded source param grid for type checking: {list(source_param_grid_for_types.keys())}"
+            )
 
         except (FileNotFoundError, ValueError) as e:
             logger.error(f"Failed to load source param grid for type checking: {e}")
             # If we can't load the grid, we can't reliably check types for resume.
             # Might be safer to disable resume in this case or fall back to basic inference.
-            logger.warning("Disabling resume functionality due to inability to load source param grid for type checking.")
+            logger.warning(
+                "Disabling resume functionality due to inability to load source param grid for type checking."
+            )
             args.resume = False
             # source_param_grid_for_types remains an empty dict
         # --- End Param Grid Load for Type Checking ---
@@ -1561,37 +1701,70 @@ def main():
                 df_completed = pd.read_csv(details_filepath, low_memory=False)
 
                 if not df_completed.empty:
-                    param_cols = [col for col in df_completed.columns if col.startswith("param_")]
+                    param_cols = [
+                        col for col in df_completed.columns if col.startswith("param_")
+                    ]
                     if not param_cols:
-                        logger.warning(f"No columns starting with 'param_' found in {details_filepath}. Cannot resume accurately.")
+                        logger.warning(
+                            f"No columns starting with 'param_' found in {details_filepath}. Cannot resume accurately."
+                        )
                     else:
                         df_params_only = df_completed[param_cols].copy()
-                        df_params_only.columns = [col.replace("param_", "", 1) for col in param_cols]
+                        df_params_only.columns = [
+                            col.replace("param_", "", 1) for col in param_cols
+                        ]
 
                         # Get a reference type map from the loaded source grid
                         type_map = {}
-                        if source_param_grid_for_types: # Check if grid was loaded successfully
+                        if (
+                            source_param_grid_for_types
+                        ):  # Check if grid was loaded successfully
                             for key, value_list in source_param_grid_for_types.items():
-                                if value_list: # Make sure list is not empty
+                                if value_list:  # Make sure list is not empty
                                     # Handle potential combined keys like return_thresh_low/high
                                     # We need the original key from the grid if possible
                                     if key.endswith("_low") or key.endswith("_high"):
-                                         base_key = key.rsplit("_", 1)[0]
-                                         # If base_key exists and has values, use its type
-                                         if base_key in source_param_grid_for_types and source_param_grid_for_types[base_key]:
-                                             # Need to handle tuple type here - check first element?
-                                             if isinstance(source_param_grid_for_types[base_key][0], tuple):
-                                                 if source_param_grid_for_types[base_key][0]: # Check if tuple has elements
-                                                     type_map[key] = type(source_param_grid_for_types[base_key][0][0])
-                                                 else: type_map[key] = None # Cannot determine type
-                                             else: # Should not happen for _low/_high but handle just in case
-                                                type_map[key] = type(source_param_grid_for_types[base_key][0])
-                                         else: # Fallback to using _low/_high value type
+                                        base_key = key.rsplit("_", 1)[0]
+                                        # If base_key exists and has values, use its type
+                                        if (
+                                            base_key in source_param_grid_for_types
+                                            and source_param_grid_for_types[base_key]
+                                        ):
+                                            # Need to handle tuple type here - check first element?
+                                            if isinstance(
+                                                source_param_grid_for_types[base_key][
+                                                    0
+                                                ],
+                                                tuple,
+                                            ):
+                                                if source_param_grid_for_types[
+                                                    base_key
+                                                ][
+                                                    0
+                                                ]:  # Check if tuple has elements
+                                                    type_map[key] = type(
+                                                        source_param_grid_for_types[
+                                                            base_key
+                                                        ][0][0]
+                                                    )
+                                                else:
+                                                    type_map[key] = (
+                                                        None  # Cannot determine type
+                                                    )
+                                            else:  # Should not happen for _low/_high but handle just in case
+                                                type_map[key] = type(
+                                                    source_param_grid_for_types[
+                                                        base_key
+                                                    ][0]
+                                                )
+                                        else:  # Fallback to using _low/_high value type
                                             type_map[key] = type(value_list[0])
                                     else:
                                         type_map[key] = type(value_list[0])
                                 else:
-                                     type_map[key] = None # Cannot determine type from empty list
+                                    type_map[key] = (
+                                        None  # Cannot determine type from empty list
+                                    )
 
                         # REMOVED logger.debug(f"Inferred type map from source grid: {type_map}")
 
@@ -1610,20 +1783,36 @@ def main():
                                 csv_value_str = str(v)
 
                                 if csv_value_str.lower() == "none":
-                                     processed_params[k] = None
-                                     continue
+                                    processed_params[k] = None
+                                    continue
 
                                 try:
                                     if expected_type is bool:
                                         # Handle common boolean string representations from CSV
-                                        if csv_value_str.lower() in ['true', '1', '1.0', 't', 'y', 'yes']:
+                                        if csv_value_str.lower() in [
+                                            "true",
+                                            "1",
+                                            "1.0",
+                                            "t",
+                                            "y",
+                                            "yes",
+                                        ]:
                                             processed_params[k] = True
-                                        elif csv_value_str.lower() in ['false', '0', '0.0', 'f', 'n', 'no']:
+                                        elif csv_value_str.lower() in [
+                                            "false",
+                                            "0",
+                                            "0.0",
+                                            "f",
+                                            "n",
+                                            "no",
+                                        ]:
                                             processed_params[k] = False
                                         else:
                                             # Attempt direct bool conversion as last resort for bool type
                                             processed_params[k] = bool(v)
-                                            logger.warning(f"Ambiguous boolean value '{v}' for key '{k}'. Interpreted as {processed_params[k]}. Consider standardizing CSV output.")
+                                            logger.warning(
+                                                f"Ambiguous boolean value '{v}' for key '{k}'. Interpreted as {processed_params[k]}. Consider standardizing CSV output."
+                                            )
                                     elif expected_type is float:
                                         # Explicitly convert to float
                                         processed_params[k] = float(v)
@@ -1635,51 +1824,75 @@ def main():
                                         # Handle cases where expected type is string (likely due to 'None' in grid)
                                         csv_value_str = str(v).strip()
                                         if csv_value_str.lower() in ["none", "nan", ""]:
-                                             processed_params[k] = None
+                                            processed_params[k] = None
                                         else:
-                                             try:
-                                                 # Attempt float conversion first for numeric-looking strings
-                                                 processed_params[k] = float(csv_value_str)
-                                             except ValueError:
-                                                 try:
-                                                      # Then attempt integer conversion
-                                                      processed_params[k] = int(csv_value_str)
-                                                 except ValueError:
-                                                      # If it's neither float nor int, keep it as a string
-                                                      processed_params[k] = csv_value_str
-                                    elif expected_type is None: # Fallback if type couldn't be inferred
+                                            try:
+                                                # Attempt float conversion first for numeric-looking strings
+                                                processed_params[k] = float(
+                                                    csv_value_str
+                                                )
+                                            except ValueError:
+                                                try:
+                                                    # Then attempt integer conversion
+                                                    processed_params[k] = int(
+                                                        csv_value_str
+                                                    )
+                                                except ValueError:
+                                                    # If it's neither float nor int, keep it as a string
+                                                    processed_params[k] = csv_value_str
+                                    elif (
+                                        expected_type is None
+                                    ):  # Fallback if type couldn't be inferred
                                         # Type couldn't be inferred, fall back to basic inference (int -> float -> bool -> str)
                                         # This maintains previous behavior for unknown keys but should be avoided.
-                                        logger.warning(f"Could not infer type for key '{k}' from source grid. Using basic inference.")
-                                        try: processed_params[k] = int(v)
+                                        logger.warning(
+                                            f"Could not infer type for key '{k}' from source grid. Using basic inference."
+                                        )
+                                        try:
+                                            processed_params[k] = int(v)
                                         except (ValueError, TypeError):
-                                            try: processed_params[k] = float(v)
+                                            try:
+                                                processed_params[k] = float(v)
                                             except (ValueError, TypeError):
                                                 if isinstance(v, str):
-                                                    if v.lower() == 'true': processed_params[k] = True
-                                                    elif v.lower() == 'false': processed_params[k] = False
-                                                    else: processed_params[k] = v
-                                                else: processed_params[k] = v
+                                                    if v.lower() == "true":
+                                                        processed_params[k] = True
+                                                    elif v.lower() == "false":
+                                                        processed_params[k] = False
+                                                    else:
+                                                        processed_params[k] = v
+                                                else:
+                                                    processed_params[k] = v
                                     else:
                                         # If expected type is known but not explicitly handled above (e.g., list, tuple - shouldn't happen here)
                                         # Attempt a reasonable default conversion (likely to string)
-                                        logger.warning(f"Unhandled expected type {expected_type} for key '{k}'. Defaulting to string representation.")
+                                        logger.warning(
+                                            f"Unhandled expected type {expected_type} for key '{k}'. Defaulting to string representation."
+                                        )
                                         processed_params[k] = csv_value_str
 
                                 except (ValueError, TypeError) as e:
-                                    logger.error(f"Failed to convert value '{v}' for key '{k}' to expected type {expected_type}: {e}")
+                                    logger.error(
+                                        f"Failed to convert value '{v}' for key '{k}' to expected type {expected_type}: {e}"
+                                    )
                                     conversion_successful = False
-                                    break # Stop processing this row if any conversion fails
+                                    break  # Stop processing this row if any conversion fails
 
                             if conversion_successful:
                                 rep = params_to_tuple_rep(processed_params)
                                 completed_param_reps.add(rep)
                                 # Limit debug logging for loaded reps
                                 # REMOVED DETAILED LOGGING HERE
-                                if len(completed_param_reps) % 500 == 0: # Log periodically for large files
-                                    logger.debug(f"Processed {len(completed_param_reps)} completed param reps from CSV...")
+                                if (
+                                    len(completed_param_reps) % 500 == 0
+                                ):  # Log periodically for large files
+                                    logger.debug(
+                                        f"Processed {len(completed_param_reps)} completed param reps from CSV..."
+                                    )
                             else:
-                                 logger.warning(f"Skipping row {i+2} in CSV due to conversion errors.")
+                                logger.warning(
+                                    f"Skipping row {i+2} in CSV due to conversion errors."
+                                )
 
                         logger.info(
                             f"Successfully loaded and processed {len(completed_param_reps)} completed parameter sets from CSV."
@@ -1697,7 +1910,7 @@ def main():
                     f"Error reading or processing existing CSV details file {details_filepath} for resume: {e}. Optimization will run all parameters.",
                     exc_info=True,
                 )
-                completed_param_reps = set() # Reset on error
+                completed_param_reps = set()  # Reset on error
         # --- End Load Completed Params ---
 
         shared_worker_args = {
