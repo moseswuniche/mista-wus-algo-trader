@@ -36,6 +36,9 @@ from .technical_indicators import (
     calculate_ema,
 )  # Ensure all needed indicators are available
 
+# --- Import Pydantic Models ---
+from .config_models import RuntimeConfig, ValidationError
+
 # Setup logger
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -264,6 +267,80 @@ class Trader:
         else:
             logger.debug("Binance Client already initialized.")
 
+    def _initialize_twm(self) -> bool:
+        """Initializes or re-initializes the ThreadedWebsocketManager."""
+        if not self.api_key or not self.secret_key:
+            logger.error("API key/secret missing. Cannot start WebSocket Manager.")
+            return False
+
+        # Stop existing TWM if it's running
+        if self.twm and self.twm.is_alive():
+            logger.info("Stopping existing TWM before re-initializing...")
+            self._stop_websocket()
+
+        try:
+            self.twm = ThreadedWebsocketManager(
+                api_key=self.api_key, api_secret=self.secret_key
+            )
+            # Use start() which handles testnet URL internally now
+            self.twm.start(testnet=self.testnet)
+            logger.info(
+                f"Threaded WebSocket Manager initialized and started (Testnet: {self.testnet})."
+            )
+            return True
+        except Exception as e:
+            logger.error(
+                f"Failed to initialize or start ThreadedWebSocketManager: {e}",
+                exc_info=True,
+            )
+            self.twm = None  # Ensure twm is None on failure
+            return False
+
+    def _get_base_asset(self) -> str:
+        """Extracts the base asset from the symbol (e.g., XRP from XRPUSDT)."""
+        # Basic implementation, assumes USDT, BUSD, BTC, ETH etc. as quote
+        # Needs refinement for more complex pairs
+        quote_assets = ["USDT", "BUSD", "BTC", "ETH", "EUR", "GBP", "AUD"]
+        for quote in quote_assets:
+            if self.symbol.endswith(quote):
+                return self.symbol[: -len(quote)]
+        # Fallback or error if quote asset not standard
+        logger.warning(f"Could not determine base asset from symbol: {self.symbol}")
+        # Returning the first part as a guess, might be incorrect
+        return self.symbol[:3]
+
+    def _get_position_size(self) -> float:
+        """Queries the exchange for the free balance of the base asset.
+        Returns 0.0 on error or if client not available.
+        """
+        if not self.client:
+            logger.error("Cannot get position size: Client not initialized.")
+            return 0.0
+
+        base_asset = self._get_base_asset()
+        try:
+            # Use retry helper for the API call
+            balance_info = self._retry_api_call(
+                self.client.get_asset_balance, asset=base_asset
+            )
+            if balance_info and "free" in balance_info:
+                size = float(balance_info["free"])
+                logger.debug(f"Current free balance for {base_asset}: {size}")
+                return size
+            else:
+                logger.warning(
+                    f"Could not get balance info or 'free' field for {base_asset}. Response: {balance_info}"
+                )
+                return 0.0
+        except BinanceAPIException as bae:
+            logger.error(f"API Error getting balance for {base_asset}: {bae}")
+            return 0.0
+        except Exception as e:
+            logger.error(
+                f"Unexpected error getting balance for {base_asset}: {e}", exc_info=True
+            )
+            return 0.0
+
     def start_trading(self, historical_days: HistoricalDays) -> None:
         """
         Starts the trading session.
@@ -332,6 +409,74 @@ class Trader:
             logger.error(f"Interval {self.bar_length} not supported.")
             if self.twm:
                 self.twm.stop()  # Stop TWM if interval is bad
+
+        # Start the TWM
+        if not self._initialize_twm():
+            logger.critical("Failed to initialize TWM. Trading cannot start.")
+            return
+
+        # Fetch initial historical data
+        if self.bar_length in self.available_intervals:
+            self.get_most_recent(historical_days)
+            # Subscribe to kline stream initially
+            if self.twm:  # Ensure TWM was initialized
+                try:
+                    stream_name = self.twm.start_kline_socket(
+                        callback=self.stream_candles,
+                        symbol=self.symbol,
+                        interval=self.bar_length,
+                    )
+                    if not stream_name:
+                        logger.error(
+                            f"Failed to start initial Kline socket for {self.symbol}."
+                        )
+                        self._stop_websocket()
+                        return  # Exit if initial socket fails
+                    else:
+                        logger.info(
+                            f"Started initial Kline socket for {self.symbol} (Stream: {stream_name})"
+                        )
+                except Exception as e:
+                    logger.error(
+                        f"Exception starting initial Kline socket: {e}", exc_info=True
+                    )
+                    self._stop_websocket()
+                    return  # Exit if initial socket fails
+            else:
+                logger.error("TWM not initialized, cannot start socket.")
+                return
+        else:
+            logger.error(f"Interval {self.bar_length} not supported.")
+            self._stop_websocket()
+            return
+
+        # --- Main Monitoring Loop ---
+        logger.info("Entering main monitoring loop...")
+        check_interval = 60  # Seconds between health checks
+        try:
+            while True:
+                # Check WebSocket status and attempt restart if needed
+                self._check_and_handle_websocket(historical_days)
+
+                # Check if TWM was stopped by the restart logic or other critical failure
+                if not self.twm or not self.twm.is_alive():
+                    logger.critical("TWM is not running. Exiting main loop.")
+                    break
+
+                # Optional: Add other periodic checks here if needed
+
+                time.sleep(check_interval)
+        except KeyboardInterrupt:
+            logger.info("KeyboardInterrupt received. Stopping trader...")
+        except Exception as e:
+            logger.critical(
+                f"Unhandled exception in main monitoring loop: {e}", exc_info=True
+            )
+        finally:
+            logger.info("Exiting main loop. Stopping WebSocket...")
+            self._stop_websocket()
+            logger.info("Trader stopped.")
+        # --- End Main Monitoring Loop ---
 
     def get_most_recent(self, days: HistoricalDays) -> None:
         """Fetches historical klines to initialize the DataFrame."""
@@ -405,29 +550,36 @@ class Trader:
 
         try:
             with open(self.runtime_config_path, "r") as f:
-                config = yaml.safe_load(f)
-                if not isinstance(config, dict):
+                config_data = yaml.safe_load(f)
+                if not isinstance(config_data, dict):
                     logger.error(
                         f"Invalid runtime config format in {self.runtime_config_path}. Expected dictionary."
                     )
                     return None
-                # Basic validation
-                if config.get("symbol") != self.symbol:
+
+                # --- Validate using Pydantic ---
+                try:
+                    validated_config = RuntimeConfig.model_validate(config_data)
+                    logger.debug(
+                        f"Runtime config {self.runtime_config_path} validated successfully."
+                    )
+                except ValidationError as e:
+                    logger.error(
+                        f"Runtime config validation failed for {self.runtime_config_path}:\n{e}"
+                    )
+                    return None
+                # --- End Validation ---
+
+                # Basic validation (already partially covered by Pydantic, but keep for explicit checks)
+                if validated_config.symbol != self.symbol:
                     logger.warning(
-                        f"Symbol in runtime config ({config.get('symbol')}) does not match trader symbol ({self.symbol}). Ignoring config."
+                        f"Symbol in runtime config ({validated_config.symbol}) does not match trader symbol ({self.symbol}). Ignoring config."
                     )
                     return None
-                if "strategy_name" not in config or "strategy_params" not in config:
-                    logger.error(
-                        f"Runtime config missing 'strategy_name' or 'strategy_params'."
-                    )
-                    return None
-                if not isinstance(config["strategy_params"], dict):
-                    logger.error(
-                        f"'strategy_params' in runtime config must be a dictionary."
-                    )
-                    return None
-                return config
+                # Pydantic ensures strategy_name and strategy_params exist and params is dict
+
+                return validated_config.model_dump()  # Return validated data as dict
+
         except yaml.YAMLError as e:
             logger.error(
                 f"Error parsing runtime config YAML {self.runtime_config_path}: {e}"
@@ -707,216 +859,255 @@ class Trader:
         """Executes trades to reach the target position."""
         # Simplified: Assumes target_position is either 1, -1, or 0
         # Closes existing position first if reversing or going flat
+
+        position_before_action = self.position  # Store initial position
+
+        # --- Exit current position if needed --- #
         if self.position != 0 and target_position != self.position:
-            self._close_open_position(f"Signal change to {target_position}")
+            logger.info(
+                f"Attempting to close position {self.position} before targeting {target_position}"
+            )
+            closed_successfully = self._close_open_position(
+                f"Signal change to {target_position}"
+            )
+            if not closed_successfully:
+                logger.error(
+                    "Failed to close existing position. Aborting further actions for this signal."
+                )
+                # Position remains unchanged from position_before_action
+                return
+            # If close was successful, self.position is now 0
             if self.max_loss_stop_triggered:
+                logger.warning(
+                    "Max loss triggered during position close. Stopping trading."
+                )
                 return  # Stop if max loss hit during close
 
-        # Opens new position if target is long or short
+        # --- Open new position if needed --- #
+        # Now check if we need to enter a NEW position (only if currently flat)
         if target_position != 0 and self.position == 0:
+            logger.info(f"Attempting to open new position {target_position}")
             side = "BUY" if target_position == 1 else "SELL"
             context = f"Opening {'Long' if target_position == 1 else 'Short'} Position"
-            order = self._execute_order(
-                side=side, quantity=self.units, context_message=context
+            opened_successfully = self._open_new_position(side, self.units, context)
+            if not opened_successfully:
+                logger.error("Failed to open new position. Position remains flat (0).")
+                # self.position should already be 0 here
+                return
+            # If open was successful, self.position is now target_position
+
+        logger.debug(
+            f"execute_trades finished. Position before: {position_before_action}, Position after: {self.position}, Target: {target_position}"
+        )
+
+    def _close_open_position(self, context_message: str) -> bool:
+        """Attempts to close the current open position. Returns True if successful, False otherwise."""
+        if self.position == 0:
+            logger.warning("Attempted to close position, but already flat.")
+            return True  # Considered successful as the goal is to be flat
+
+        side = "SELL" if self.position == 1 else "BUY"
+        logger.info(
+            f"Executing order to close position ({side} {self.units} {self.symbol}). Reason: {context_message}"
+        )
+
+        # --- Get actual position size before closing ---
+        actual_size = self._get_position_size()
+        if actual_size <= 0:
+            logger.warning(
+                f"Attempting to close {self.position} position, but current size query returned {actual_size}. Assuming flat."
             )
-            if order:
-                self.position = (
-                    target_position  # Update position ONLY if order succeeds
+            self.position = 0  # Correct state if needed
+            self._reset_sl_tp()
+            return True
+        logger.info(f"Actual position size to close: {actual_size}")
+        # --- End Get Size ---
+
+        order = self._execute_order(
+            side=side,
+            quantity=actual_size,  # Use actual size for closing order
+            context_message=f"Closing Position - {context_message}",
+        )
+
+        # Check if the order resulted in the position being closed
+        if order and order.get("status") in ["FILLED", "PARTIALLY_FILLED"]:
+            # Assume market order fills completely or partially closes
+            # For simplicity, we assume a full close here. Real implementation might need
+            # to check filled quantity against position size.
+            executed_qty = float(order.get("executedQty", 0))
+            # Use a tolerance for float comparison
+            tolerance = 1e-8  # Adjust tolerance based on asset precision
+            if abs(executed_qty - actual_size) < tolerance:
+                logger.info(
+                    f"Position closed successfully (Order ID: {order.get('orderId')}). Executed: {executed_qty}, Expected: {actual_size}"
                 )
+                self._reset_sl_tp()  # Reset SL/TP state AFTER confirming close
+                self.position = 0  # Update position state AFTER confirming close
+                return True
+            elif executed_qty > 0:
+                logger.warning(
+                    f"Close order partially filled ({executed_qty}/{actual_size}). Position might not be fully closed. State unchanged for safety."
+                )
+                # Keep self.position as it was, do not reset SL/TP yet.
+                # This needs more robust handling based on actual position tracking.
+                return False
+            else:  # executed_qty is 0 despite FILLED/PARTIALLY_FILLED status
+                logger.error(
+                    f"Close order status {order.get('status')} but executed quantity is 0. Failed to close. State unchanged."
+                )
+                return False
+        else:
+            logger.error(
+                f"Failed to close position. Order status: {order.get('status', 'N/A') if order else 'No order object'}. Position state unchanged."
+            )
+            return False
+
+    def _open_new_position(
+        self, side: str, quantity: float, context_message: str
+    ) -> bool:
+        """Attempts to open a new position. Returns True if successful, False otherwise."""
+        if self.position != 0:
+            logger.error(
+                f"Attempted to open new position, but already in position {self.position}. Aborting."
+            )
+            return False  # Don't open if already in position
+
+        logger.info(
+            f"Executing order to open new position ({side} {quantity} {self.symbol}). Reason: {context_message}"
+        )
+        order = self._execute_order(
+            side=side,
+            quantity=quantity,
+            context_message=f"Opening Position - {context_message}",
+        )
+
+        if order and order.get("status") in ["FILLED", "PARTIALLY_FILLED"]:
+            # For simplicity, assume FILLED or PARTIALLY_FILLED means entry occurred.
+            # A robust system would check filled quantity.
+            executed_qty = float(order.get("executedQty", 0))
+            if executed_qty > 0:
+                logger.info(
+                    f"New position opened successfully (Order ID: {order.get('orderId')}). Executed Qty: {executed_qty}"
+                )
+                self.position = 1 if side == "BUY" else -1  # Update position state
                 self._calculate_set_sl_tp(order)  # Set SL/TP based on entry
+                return True
             else:
-                logger.error("Failed to open new position. Position remains flat.")
-                self.position = 0  # Ensure position is marked as flat if entry failed
+                logger.warning(
+                    "Open order status is FILLED/PARTIALLY_FILLED but executed quantity is 0. Position not opened."
+                )
+                self.position = 0  # Ensure position is marked flat
+                return False
+        else:
+            logger.error(
+                f"Failed to open new position. Order status: {order.get('status', 'N/A') if order else 'No order object'}. Position remains flat."
+            )
+            self.position = 0  # Ensure position is marked flat
+            return False
 
     def _execute_order(
         self, side: str, quantity: float, context_message: str
     ) -> Optional[Dict[str, Any]]:
         """Executes a market order via the Binance API.
-
-        Args:
-            side: "BUY" or "SELL".
-            quantity: The quantity of the asset to trade.
-            context_message: A message describing the trade context.
-
-        Returns:
-            The executed order object if successful, None otherwise.
+        Returns the order dictionary on success (even partial fill), None on failure.
         """
-        # --- Stop Check ---
-        if self.max_loss_stop_triggered:
-            logger.warning(
-                f"Max loss stop triggered. Skipping order execution: {side} {quantity} {self.symbol}"
-            )
-            return None
-
         if not self.client:
+            logger.error("Binance client not initialized.")
+            return None
+
+        position_before_order = self.position  # Store position before attempting order
+        log_prefix = f"Order Attempt ({context_message}) - Side: {side}, Qty: {quantity}, PosBefore: {position_before_order}"
+        logger.info(log_prefix)
+
+        # Add safety check for quantity (optional, but good practice)
+        if quantity <= 0:
             logger.error(
-                f"Cannot execute {side} order. Binance client not initialized."
+                f"{log_prefix} - Invalid quantity: {quantity}. Aborting order."
             )
             return None
 
-        # Store position *before* executing the order to check for entry/exit later
-        position_before_order = self.position
-
-        logger.info(
-            f"Attempting to execute {side} order for {quantity} {self.symbol} ({context_message}) | Position Before: {position_before_order}"
-        )
         try:
-            order = self.client.create_order(
+            # Use testnet endpoint setting from client
+            # self.client.API_URL = self.client.API_URL.replace('api.', 'testnet.') if self.testnet else self.client.API_URL.replace('testnet.', 'api.')
+            logger.debug(f"Executing {side} order for {quantity} {self.symbol}")
+            # Wrap the API call with the retry helper
+            order = self._retry_api_call(
+                self.client.create_order,
                 symbol=self.symbol,
                 side=side,
                 type="MARKET",
                 quantity=quantity,
             )
+            logger.info(f"Order submitted via API: {order}")
 
-            # Process SL/TP based on whether it was an entry or exit
-            if order.get("status") == "FILLED":
-                self.report_trade(order, context_message)
+            # --- Process Order Result --- #
+            if order and isinstance(order, dict):
+                order_status = order.get("status")
+                order_id = order.get("orderId")
+                filled_qty = float(order.get("executedQty", 0))
 
-                # Check if it was an ENTRY trade (moving from flat or reversing)
-                is_entry = (
-                    (position_before_order == 0)
-                    or (position_before_order == 1 and side == "SELL")
-                    or (position_before_order == -1 and side == "BUY")
-                )
+                # Log trade details regardless of status for transparency
+                # self.report_trade(order, context_message + f" (Status: {order_status})")
 
-                is_closing_leg_of_reversal = (
-                    position_before_order == 1 and side == "SELL"
-                ) or (position_before_order == -1 and side == "BUY")
-
-                if is_entry and not is_closing_leg_of_reversal:
-                    # This is the final order that establishes the new position (either from flat or second leg of reversal)
-                    self._calculate_set_sl_tp(order)
-                elif is_closing_leg_of_reversal:
-                    # This is the first leg of a reversal (closing the old position)
-                    self._reset_sl_tp()  # Reset SL/TP from the old position
-                    self.position = (
-                        0  # Temporarily mark as flat before the next entry order
+                if order_status in ["FILLED", "PARTIALLY_FILLED"]:
+                    if filled_qty > 0:
+                        logger.info(
+                            f"Order {order_id} considered successful (Status: {order_status}, Filled Qty: {filled_qty})."
+                        )
+                        # State updates (position, SL/TP) should happen in the calling function (_close_open_position or _open_new_position)
+                        # based on the success/failure return of this function.
+                        return cast(
+                            Dict[str, Any], order
+                        )  # Return the successful order details
+                    else:
+                        logger.warning(
+                            f"Order {order_id} has status {order_status} but filled quantity is 0. Treating as failed."
+                        )
+                        return None  # Treat as failure if no quantity filled
+                elif order_status in ["REJECTED", "EXPIRED", "CANCELED", "NEW"]:
+                    # NEW status might occur momentarily, but shouldn't persist for MARKET orders usually.
+                    # Treat these as failures for state update purposes.
+                    logger.error(
+                        f"Order {order_id} failed or did not execute. Status: {order_status}. No position change."
                     )
-                elif (
-                    position_before_order != 0
-                ):  # This must be closing a position to flat
-                    self._reset_sl_tp()
-                    self.position = 0  # Mark as flat
+                    return None  # Explicitly return None for failed states
+                else:
+                    logger.warning(
+                        f"Order {order_id} has unexpected status: {order_status}. Treating as potentially failed."
+                    )
+                    # Consider returning order here if further checks are needed by caller, but safer to treat as None
+                    return None
             else:
-                logger.warning(
-                    f"Order status was not FILLED: {order.get('status')}. SL/TP state not updated."
+                logger.error(
+                    f"API call for {side} {quantity} {self.symbol} returned invalid/unexpected data: {order}"
                 )
-                # Report trade anyway? Might be PARTIALLY_FILLED etc.
-                self.report_trade(
-                    order, context_message + f" (Status: {order.get('status')})"
-                )
+                return None
 
-            return order  # type: ignore [no-any-return]
         except BinanceAPIException as bae:
+            # Handle specific API errors
             logger.error(
-                f"Binance API Error executing {side} order for {self.symbol}: Code={bae.code}, Message={bae.message}"
+                f"Binance API Exception during order execution ({context_message}): Code={bae.code}, Message={bae.message}"
             )
+            # Log details relevant to state
+            logger.error(f"  Position before failed order: {position_before_order}")
+            logger.error(
+                f"  Current self.position: {self.position} (Should NOT have changed)"
+            )
+            # Depending on the error code, you might implement specific handling or retries
+            # For now, simply return None to indicate failure
             return None
         except Exception as e:
             logger.error(
-                f"Error executing {side} order for {self.symbol}: {e}", exc_info=True
+                f"Unexpected Exception during order execution ({context_message}): {e}",
+                exc_info=True,
+            )
+            logger.error(f"  Position before failed order: {position_before_order}")
+            logger.error(
+                f"  Current self.position: {self.position} (Should NOT have changed)"
             )
             return None
 
-    def _close_open_position(self, context_message: str) -> None:
-        """Closes any open long or short position and resets SL/TP."""
-        # ... (existing logging and order execution logic) ...
-        # Resetting SL/TP is now handled within _execute_order when a closing trade is detected
-        # We still need to ensure position is 0 here unconditionally
-        logger.info(
-            f"Closing position ({context_message}). Current position: {self.position}"
-        )
-        if self.position == 1:
-            logger.info("Executing SELL to close LONG position.")
-            self._execute_order("SELL", self.units, context_message)
-        elif self.position == -1:
-            logger.info("Executing BUY to close SHORT position.")
-            self._execute_order("BUY", self.units, context_message)
-        else:
-            logger.info("No open position to close.")
-        # Explicitly set position to 0 and reset SL/TP here in case _execute_order failed or wasn't called
-        self.position = 0
-        self._reset_sl_tp()
-
-    def report_trade(self, order: Dict[str, Any], going: str) -> None:
-        """Formats and prints trade details, updates profit calculations, and checks max cumulative loss."""
-        try:
-            side = order["side"]
-            # Use 'updateTime' if 'transactTime' is 0 or missing, prefer 'transactTime'
-            transact_time = order.get("transactTime", order.get("updateTime"))
-            time_dt = (
-                pd.to_datetime(transact_time, unit="ms")
-                if transact_time
-                else datetime.now(dt.timezone.utc)
-            )
-
-            base_units = float(order["executedQty"])
-            quote_units = float(order["cummulativeQuoteQty"])
-
-            # Avoid division by zero if executed quantity is zero
-            price = round(quote_units / base_units, 5) if base_units != 0 else 0.0
-
-            self.trades += 1
-            trade_value = quote_units if side == "SELL" else -quote_units
-            self.trade_values.append(trade_value)
-
-            real_profit = 0.0
-            if self.trades % 2 == 0 and len(self.trade_values) >= 2:
-                real_profit = round(sum(self.trade_values[-2:]), 3)
-
-            self.cum_profits = round(sum(self.trade_values), 3)
-
-            # Log trade details
-            report_lines = []
-            report_lines.append(100 * "-")
-            report_lines.append(f"{time_dt} | {going}")
-            report_lines.append(
-                f"{time_dt} | Base_Units = {base_units} | Quote_Units = {quote_units} | Price = {price}"
-            )
-            report_lines.append(
-                f"{time_dt} | Trade Profit = {real_profit} | Cumulative Profits = {self.cum_profits}"
-            )
-            report_lines.append(100 * "-")
-            logger.info("\n" + "\n".join(report_lines))
-
-            # --- Check Max Cumulative Loss ---
-            if (
-                self.max_cumulative_loss is not None
-                and not self.max_loss_stop_triggered
-            ):
-                if self.cum_profits < -self.max_cumulative_loss:
-                    logger.critical(
-                        f"CRITICAL: Max Cumulative Loss limit reached! Cum Profits ({self.cum_profits:.3f}) < Limit (-{self.max_cumulative_loss:.3f})."
-                    )
-                    self.max_loss_stop_triggered = True
-                    logger.critical(
-                        "Triggering immediate position closure and bot stop."
-                    )
-                    self._close_open_position(
-                        "MAX CUMULATIVE LOSS LIMIT REACHED"
-                    )  # Close position
-                    if self.twm:
-                        logger.info("Stopping WebSocket Manager due to max loss.")
-                        try:
-                            self.twm.stop()
-                        except Exception as e:
-                            logger.error(
-                                f"Error stopping TWM after max loss: {e}", exc_info=True
-                            )
-                    # Optional: Add further shutdown logic here if needed (e.g., notifications)
-
-        except KeyError as e:
-            logger.error(
-                f"Error processing order report: Missing key {e} in order object: {order}",
-                exc_info=True,
-            )
-        except Exception as e:
-            logger.error(
-                f"An unexpected error occurred during trade reporting: {e}",
-                exc_info=True,
-            )
-
-    # --- SL/TP Helper Methods ---
+    # --- SL/TP Management --- #
     def _calculate_set_sl_tp(self, entry_order: Dict[str, Any]):
         """Calculates and stores SL/TP levels based on entry price."""
         try:
@@ -1064,6 +1255,133 @@ class Trader:
         """Stops the WebSocket connection."""
         if self.twm:
             self.twm.stop()
+
+    # --- API Call Retry Helper ---
+    def _retry_api_call(
+        self,
+        api_func,
+        *args,
+        max_retries=3,
+        initial_delay=1,
+        backoff_factor=2,
+        **kwargs,
+    ):
+        """Attempts to call a Binance API function with retries on specific errors."""
+        retries = 0
+        delay = initial_delay
+        while retries < max_retries:
+            try:
+                # Attempt the API call
+                return api_func(*args, **kwargs)
+            except BinanceAPIException as bae:
+                logger.warning(
+                    f"API Error on attempt {retries + 1}/{max_retries}: Code={bae.code}, Msg={bae.message}. Retrying..."
+                )
+                retries += 1
+                # Specific handling for rate limits (longer wait)
+                if bae.code == -1003:
+                    wait_time = 60  # Wait 60 seconds for rate limit
+                    logger.warning(f"Rate limit hit. Waiting {wait_time}s...")
+                else:
+                    wait_time = delay
+                    delay *= backoff_factor  # Exponential backoff for other errors
+
+                if retries >= max_retries:
+                    logger.error(
+                        f"Max retries ({max_retries}) reached for {api_func.__name__}. API Error: {bae}"
+                    )
+                    raise bae  # Reraise the last exception after max retries
+                time.sleep(wait_time)
+
+            except Exception as e:
+                # Catch other potential exceptions (network errors, etc.)
+                logger.warning(
+                    f"Unexpected error on attempt {retries + 1}/{max_retries}: {e}. Retrying..."
+                )
+                retries += 1
+                wait_time = delay
+                delay *= backoff_factor
+
+                if retries >= max_retries:
+                    logger.error(
+                        f"Max retries ({max_retries}) reached for {api_func.__name__}. Last Error: {e}"
+                    )
+                    raise e  # Reraise the last exception
+                time.sleep(wait_time)
+
+        # Should not be reached if max_retries > 0, but included for safety/type checking
+        logger.error(f"Exited retry loop unexpectedly for {api_func.__name__}.")
+        return None  # Or raise an exception indicating retry failure
+
+    # --- End API Call Retry Helper ---
+
+    # --- Added Websocket Health Check and Restart ---
+    def _check_and_handle_websocket(self, historical_days: HistoricalDays) -> None:
+        """Checks TWM status and attempts restart if not alive."""
+        if self.twm and self.twm.is_alive():
+            # All good, just log debug periodically if needed
+            # logger.debug("TWM is alive.")
+            return
+
+        logger.warning(
+            f"ThreadedWebsocketManager for {self.symbol} is not alive or not initialized. Attempting restart..."
+        )
+
+        # Attempt to stop cleanly first (might be redundant if already dead)
+        self._stop_websocket()
+        time.sleep(5)  # Brief pause before restarting
+
+        # Re-initialize client and TWM
+        logger.info("Re-initializing Binance client...")
+        self._initialize_client()  # Re-check API connection
+        if not self.client:
+            logger.error("Failed to re-initialize client. Cannot restart TWM.")
+            # Consider a longer sleep or different error handling here
+            return
+
+        logger.info("Re-initializing TWM...")
+        if not self._initialize_twm():
+            logger.error("Failed to re-initialize TWM.")
+            # Consider a longer sleep or different error handling here
+            return
+
+        # Re-fetch recent data
+        logger.info("Re-fetching recent historical data after TWM restart...")
+        self.get_most_recent(historical_days)
+        if self.data.empty:
+            logger.error(
+                "Failed to fetch recent data after TWM restart. Cannot resume strategy."
+            )
+            # Stop the newly started TWM?
+            self._stop_websocket()
+            return
+
+        # Restart the kline socket subscription
+        if self.twm:
+            try:
+                stream_name = self.twm.start_kline_socket(
+                    callback=self.stream_candles,
+                    symbol=self.symbol,
+                    interval=self.bar_length,
+                )
+                if stream_name:
+                    logger.info(
+                        f"Successfully restarted Kline socket for {self.symbol} (Stream: {stream_name})"
+                    )
+                else:
+                    logger.error(
+                        f"Failed to restart Kline socket for {self.symbol} after TWM restart."
+                    )
+                    self._stop_websocket()  # Stop TWM again if socket fails
+            except Exception as e:
+                logger.error(f"Exception restarting Kline socket: {e}", exc_info=True)
+                self._stop_websocket()
+        else:
+            logger.error(
+                "TWM is None after restart attempt. Cannot restart Kline socket."
+            )
+
+    # --- End Websocket Health Check ---
 
 
 if __name__ == "__main__":

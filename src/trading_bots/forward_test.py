@@ -26,6 +26,9 @@ from .technical_indicators import calculate_atr
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.append(str(PROJECT_ROOT))
 
+# --- Import BacktestRunConfig ---
+from .config_models import BacktestRunConfig, ValidationError
+
 # Assuming load_csv_data is in data_utils or similar
 # This import might need adjustment based on where load_csv_data actually lives
 try:
@@ -182,11 +185,12 @@ def run_forward_test(
 ):
     """Runs a backtest on the forward test data slice using optimized parameters
     loaded from the specified configuration file.
+    Now uses BacktestRunConfig.
     """
     logger.info(f"--- Running Forward Test for {strategy_short_name} on {symbol} --- ")
     logger.info(f"Loading optimized parameters from: {param_config_path}")
 
-    # 1. Get Strategy Class
+    # 1. Get Strategy Class Name (Needed for loading params)
     if strategy_short_name not in STRATEGY_CLASS_MAP:
         logger.error(f"Unknown strategy: {strategy_short_name}")
         return None
@@ -204,114 +208,109 @@ def run_forward_test(
         return None
     logger.info(f"Loaded best parameters: {best_params_all}")
 
-    # 3. Extract specific parameters for run_backtest
-    # --- Strategy Core Params ---
-    core_strategy_params = {
-        k: v
-        for k, v in best_params_all.items()
-        if k
-        not in [
-            # Exclude SL/TP/TSL and known filter keys
-            "stop_loss_pct",
-            "take_profit_pct",
-            "trailing_stop_loss_pct",
-            "apply_atr_filter",
-            "atr_filter_period",
-            "atr_filter_threshold",
-            "atr_filter_multiplier",
-            "atr_filter_sma_period",
-            "apply_seasonality",
-            "seasonality_start_hour",
-            "seasonality_end_hour",
-            "allowed_trading_hours_utc",
-            "apply_seasonality_to_symbols",
-        ]
-    }
-    # Clean None strings just in case
-    for key, value in core_strategy_params.items():
-        if isinstance(value, str) and value.lower() == "none":
-            core_strategy_params[key] = None
-
-    # --- SL/TP/TSL from Grid ---
-    sl_val_grid = best_params_all.get("stop_loss_pct")
-    tp_val_grid = best_params_all.get("take_profit_pct")
-    tsl_val_grid = best_params_all.get("trailing_stop_loss_pct")
-
-    # --- Filter Params from Grid ---
-    apply_atr_grid = best_params_all.get("apply_atr_filter")
-    atr_period_grid = best_params_all.get("atr_filter_period")
-    # Use 'atr_filter_threshold' key from YAML for multiplier
-    atr_multiplier_grid = best_params_all.get("atr_filter_threshold")
-    atr_sma_grid = best_params_all.get("atr_filter_sma_period")
-    apply_seasonality_grid = best_params_all.get("apply_seasonality")
-    # Construct trading hours string from start/end hours in grid
-    start_hour_grid = best_params_all.get("seasonality_start_hour")
-    end_hour_grid = best_params_all.get("seasonality_end_hour")
-    trading_hours_grid = (
-        f"{start_hour_grid}-{end_hour_grid}"
-        if start_hour_grid is not None and end_hour_grid is not None
-        else None
-    )
-    seasonality_symbols_grid = best_params_all.get("apply_seasonality_to_symbols")
-
-    # 4. Instantiate Strategy
-    logger.info(
-        f"Instantiating {strategy_class_name} with core params: {core_strategy_params}"
-    )
+    # 3. Construct BacktestRunConfig
     try:
-        strategy_instance = strategy_class(**core_strategy_params)
-    except TypeError as e:
-        logger.error(
-            f"Error instantiating {strategy_class_name} with params {core_strategy_params}: {e}"
-        )
+        # Extract core strategy params
+        core_strategy_params = {
+            k: v
+            for k, v in best_params_all.items()
+            if k
+            not in [
+                # Exclude SL/TP/TSL and known filter keys that are handled separately
+                "stop_loss_pct",
+                "take_profit_pct",
+                "trailing_stop_loss_pct",
+                "apply_atr_filter",
+                "atr_filter_period",
+                "atr_filter_threshold",  # Use the key from YAML
+                # "atr_filter_multiplier", # Don't exclude this if it exists
+                "atr_filter_sma_period",
+                "apply_seasonality",  # Use the key from YAML
+                "seasonality_start_hour",
+                "seasonality_end_hour",
+                "allowed_trading_hours_utc",  # Exclude if building separately
+                "apply_seasonality_to_symbols",
+            ]
+        }
+
+        # Clean None strings just in case they exist in core params
+        for key, value in core_strategy_params.items():
+            if isinstance(value, str) and value.lower() == "none":
+                core_strategy_params[key] = None
+
+        # --- Build Config Dictionary ---
+        config_dict = {
+            # Core settings from function args
+            "symbol": symbol,
+            "initial_balance": initial_balance,
+            "commission_bps": commission_bps,
+            "units": trade_units,
+            # Strategy info
+            "strategy_short_name": strategy_short_name,
+            "strategy_params": core_strategy_params,
+            # Risk params directly from loaded best params
+            "stop_loss_pct": best_params_all.get("stop_loss_pct"),
+            "take_profit_pct": best_params_all.get("take_profit_pct"),
+            "trailing_stop_loss_pct": best_params_all.get("trailing_stop_loss_pct"),
+            # Filter flags and params - prioritize from best_params file
+            # If flags/params are missing from best_params, they default to False/None/model defaults
+            "apply_atr_filter": best_params_all.get("apply_atr_filter", False),
+            "atr_filter_period": best_params_all.get("atr_filter_period", 14),
+            # Use the threshold key from YAML for multiplier
+            "atr_filter_multiplier": best_params_all.get("atr_filter_threshold", 1.5),
+            "atr_filter_sma_period": best_params_all.get("atr_filter_sma_period", 100),
+            # Use apply_seasonality key from YAML for flag
+            "apply_seasonality_filter": best_params_all.get("apply_seasonality", False),
+            # Construct hours string OR take directly if saved
+            "allowed_trading_hours_utc": best_params_all.get(
+                "allowed_trading_hours_utc"
+            ),
+            "apply_seasonality_to_symbols": best_params_all.get(
+                "apply_seasonality_to_symbols"
+            ),
+        }
+
+        # Build hours string if start/end are present and main key isn't
+        if config_dict["allowed_trading_hours_utc"] is None:
+            start_hour_grid = best_params_all.get("seasonality_start_hour")
+            end_hour_grid = best_params_all.get("seasonality_end_hour")
+            if start_hour_grid is not None and end_hour_grid is not None:
+                config_dict["allowed_trading_hours_utc"] = (
+                    f"{start_hour_grid}-{end_hour_grid}"
+                )
+
+        # Validate and create the config object
+        backtest_config = BacktestRunConfig(**config_dict)
+        logger.info("Constructed BacktestRunConfig for forward test.")
+        logger.debug(f"Forward Test Config: {backtest_config.model_dump()}")
+
+    except ValidationError as e:
+        logger.error(f"Failed to validate BacktestRunConfig for forward test: {e}")
         return None
+    except Exception as e:
+        logger.error(f"Error constructing BacktestRunConfig: {e}", exc_info=True)
+        return None
+    # --- End Construct Config --- #
 
-    # 5. Run Backtest (Data is already sliced and indicators pre-calculated in main)
+    # 4. Run Backtest using the Config Object
     logger.info(
-        "Running backtest on the forward test data using loaded optimized parameters..."
+        f"Running backtest on forward test data ({fwd_test_start} to {fwd_test_end})..."
     )
-    fwd_results = None
     try:
-        fwd_results = run_backtest(
-            data=data,  # Pass the pre-sliced, indicator-rich data
-            strategy=strategy_instance,
-            symbol=symbol,
-            units=trade_units,
-            initial_balance=initial_balance,
-            commission_bps=commission_bps,
-            # --- Pass Global Defaults (from CLI args) as Fallbacks ---
-            stop_loss_pct=None,  # SL/TP/TSL should always come from grid now
-            take_profit_pct=None,
-            trailing_stop_loss_pct=None,
-            apply_atr_filter=global_apply_atr_filter,
-            atr_filter_period=global_atr_filter_period,
-            atr_filter_multiplier=global_atr_filter_multiplier,
-            atr_filter_sma_period=global_atr_filter_sma_period,
-            apply_seasonality_filter=global_apply_seasonality_filter,
-            allowed_trading_hours_utc=global_allowed_trading_hours_utc,
-            apply_seasonality_to_symbols=global_apply_seasonality_to_symbols,
-            # --- Pass Loaded Optimized Params (from YAML) ---
-            sl_from_grid=sl_val_grid,
-            tp_from_grid=tp_val_grid,
-            tsl_from_grid=tsl_val_grid,
-            apply_atr_from_grid=apply_atr_grid,
-            atr_period_from_grid=atr_period_grid,
-            atr_multiplier_from_grid=atr_multiplier_grid,
-            atr_sma_from_grid=atr_sma_grid,
-            apply_seasonality_from_grid=apply_seasonality_grid,
-            trading_hours_from_grid=trading_hours_grid,
-            seasonality_symbols_from_grid=seasonality_symbols_grid,
+        backtest_results = run_backtest(
+            data=data,  # Pass the pre-sliced data
+            config=backtest_config,  # Pass the config object
         )
     except Exception as e:
-        logger.error(f"Backtest execution failed: {e}", exc_info=True)
-        return None  # Return None on failure
+        logger.error(f"Exception during run_backtest call: {e}", exc_info=True)
+        return None
 
-    if fwd_results is None or fwd_results.get("performance_summary") is None:
-        logger.error("Backtest did not return valid results.")
-        return None  # Return None on failure
+    if not backtest_results:
+        logger.error("Forward test backtest run failed or returned no results.")
+        return None
 
     logger.info("Forward test backtest completed.")
-    return fwd_results  # Return the results dict
+    return backtest_results
 
 
 # --- Main Execution Block ---
@@ -615,21 +614,7 @@ if __name__ == "__main__":
             # Generate HTML Report
             report_filename = report_path / f"{base_filename}_forward_test_report.html"
 
-            # Prepare parameters for the report
-            test_params_for_report = {
-                "Symbol": args.symbol,
-                "Interval": args.interval or "N/A",  # Or deduce from filename?
-                "Forward Start": args.fwd_start,
-                "Forward End": args.fwd_end or "End of Data",
-                "Initial Balance": args.balance,
-                "Commission (bps)": args.commission,
-                "Units": args.units,
-                "ATR Filter Enabled": args.apply_atr_filter,
-                "Seasonality Filter Enabled": args.apply_seasonality_filter,
-            }
-
-            # Load best params again here to ensure they are defined in this scope
-            # Use the same function as used in run_forward_test
+            # --- Prepare parameters for the report (using best_params) ---
             strategy_class = STRATEGY_CLASS_MAP.get(args.strategy)
             strategy_class_name = (
                 strategy_class.__name__ if strategy_class else "UnknownStrategy"
@@ -642,36 +627,81 @@ if __name__ == "__main__":
                 )
                 or {}
             )
-            # Strategy params are the core params without SL/TP etc.
-            strategy_params = {
+
+            # Get core strategy params (exclude risk/filter keys)
+            strategy_params_for_report = {
                 k: v
                 for k, v in best_params.items()
                 if k
-                not in ["stop_loss_pct", "take_profit_pct", "trailing_stop_loss_pct"]
+                not in [
+                    "stop_loss_pct",
+                    "take_profit_pct",
+                    "trailing_stop_loss_pct",
+                    "apply_atr_filter",
+                    "atr_filter_period",
+                    "atr_filter_threshold",
+                    "atr_filter_multiplier",
+                    "atr_filter_sma_period",
+                    "apply_seasonality",
+                    "seasonality_start_hour",
+                    "seasonality_end_hour",
+                    "allowed_trading_hours_utc",
+                    "apply_seasonality_to_symbols",
+                ]
             }
-            # Clean None strings again just in case
-            for key, value in strategy_params.items():
+            # Clean None strings
+            for key, value in strategy_params_for_report.items():
                 if isinstance(value, str) and value.lower() == "none":
-                    strategy_params[key] = None
+                    strategy_params_for_report[key] = None
 
-            if args.apply_atr_filter:
-                # Get filter params from best_params (loaded from config)
+            # Get test parameters (use best_params for filters)
+            test_params_for_report = {
+                "Symbol": args.symbol,
+                # "Interval": args.interval or "N/A", # Interval not available in args?
+                "Forward Start": args.fwd_start,
+                "Forward End": args.fwd_end or "End of Data",
+                "Initial Balance": args.balance,
+                "Commission (bps)": args.commission,
+                "Units": args.units,
+                # --- Derive Filter status *from best_params* --- #
+                "ATR Filter Enabled": best_params.get("apply_atr_filter", False),
+                "Seasonality Filter Enabled": best_params.get(
+                    "apply_seasonality", False
+                ),
+            }
+
+            # Add specific filter params ONLY if the filter was enabled according to best_params
+            if test_params_for_report["ATR Filter Enabled"]:
                 test_params_for_report["ATR Filter Period"] = best_params.get(
-                    "atr_filter_period", args.atr_filter_period
-                )  # Fallback to args if missing
+                    "atr_filter_period",
+                    "N/A (Missing in best_params)",  # Report missing
+                )
                 test_params_for_report["ATR Filter Multiplier"] = best_params.get(
-                    "atr_filter_multiplier", args.atr_filter_multiplier
+                    "atr_filter_threshold",
+                    "N/A (Missing in best_params)",  # Use threshold key
                 )
                 test_params_for_report["ATR Filter SMA Period"] = best_params.get(
-                    "atr_filter_sma_period", args.atr_filter_sma_period
+                    "atr_filter_sma_period", "N/A (Missing in best_params)"
                 )
-            if args.apply_seasonality_filter:
-                test_params_for_report["Allowed Trading Hours"] = best_params.get(
-                    "allowed_trading_hours_utc", args.allowed_trading_hours_utc
+            if test_params_for_report["Seasonality Filter Enabled"]:
+                # Try constructing from start/end hours first
+                start_h = best_params.get("seasonality_start_hour")
+                end_h = best_params.get("seasonality_end_hour")
+                hours_str = best_params.get(
+                    "allowed_trading_hours_utc"
+                )  # Check if combined key exists
+                if hours_str is None and start_h is not None and end_h is not None:
+                    hours_str = f"{start_h}-{end_h}"
+
+                test_params_for_report["Allowed Trading Hours"] = (
+                    hours_str
+                    if hours_str is not None
+                    else "N/A (Missing in best_params)"
                 )
                 test_params_for_report["Seasonality Applied Symbols"] = best_params.get(
-                    "apply_seasonality_to_symbols", args.apply_seasonality_to_symbols
+                    "apply_seasonality_to_symbols", "N/A (Missing in best_params)"
                 )
+            # --- End Deriving Filter status --- #
 
             # Extract relevant metrics for the report (assuming run_backtest returns these)
             metrics_for_report = {
@@ -690,7 +720,7 @@ if __name__ == "__main__":
                 report_filename=report_filename,
                 report_title=f"{args.strategy} {args.symbol} Forward Test Report",
                 test_params=test_params_for_report,
-                strategy_params=strategy_params,  # Now defined in this scope
+                strategy_params=strategy_params_for_report,  # Use the cleaned core params
             )
             logger.info(f"Forward test report saved to: {report_filename}")
         elif not args.plotting:
