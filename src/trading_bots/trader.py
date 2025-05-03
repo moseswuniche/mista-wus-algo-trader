@@ -18,6 +18,7 @@ from .config_utils import load_secrets_from_aws  # Added
 import yaml  # Added
 from pathlib import Path  # Added
 from binance.exceptions import BinanceAPIException  # Added
+import json  # Added for state saving
 
 # Import the strategy interface and specific strategies if needed for type hints
 from .strategies import (
@@ -53,6 +54,10 @@ Position = int  # -1: short, 0: neutral, 1: long
 HistoricalDays = float  # Type alias for days of historical data
 ApiKey = str
 SecretKey = str
+# Define state file directory constant
+STATE_DIR = Path("results/state")
+# Define trade log directory constant
+TRADE_LOG_DIR = Path("results/live_trades")
 
 # Import all strategies and map by class name for dynamic loading
 STRATEGY_CLASS_MAP = {
@@ -96,6 +101,8 @@ class Trader:
         apply_seasonality_to_symbols: Optional[
             str
         ] = None,  # Expects comma-separated string
+        # <<< ADD commission_bps PARAMETER >>>
+        commission_bps: float = 0.0,  # Commission in basis points (e.g., 7.5 for 0.075%)
     ) -> None:
         """
         Initializes the Trader.
@@ -120,6 +127,7 @@ class Trader:
             apply_seasonality_filter: Whether to enable the seasonality filter.
             allowed_trading_hours_utc: String 'HH-HH' for allowed UTC trading hours.
             apply_seasonality_to_symbols: Comma-separated string of symbols for seasonality.
+            commission_bps: Commission in basis points (e.g., 7.5 for 0.075%).
         """
         self.symbol = symbol
         self.bar_length = bar_length
@@ -157,6 +165,9 @@ class Trader:
         self.client: Optional[Client] = None
         self.twm: Optional[ThreadedWebsocketManager] = None
         self._initialize_client()
+
+        # <<< STORE commission_bps >>>
+        self.commission_bps = commission_bps
 
         # SL/TP/TSL State
         self.stop_loss_pct = stop_loss_pct
@@ -220,6 +231,23 @@ class Trader:
         self.last_config_mtime: Optional[float] = None
         self.config_check_counter = 0
         self._update_config_mtime()
+
+        # Add state file path
+        self.state_file_path = STATE_DIR / f"trader_state_{self.symbol}.json"
+
+        # Attempt to load state on initialization
+        self._load_state()
+
+        # Define trades CSV path and ensure directory exists
+        TRADE_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        self.trades_csv_path = (
+            TRADE_LOG_DIR
+            / f"live_trades_{self.symbol}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        )
+        logger.info(f"Live trades will be logged to: {self.trades_csv_path}")
+
+        # Add attribute to store entry order ID
+        self.entry_order_id: Optional[str] = None
 
     def _determine_required_bars(self) -> int:
         """Determine max lookback needed based on strategy and filters."""
@@ -375,6 +403,64 @@ class Trader:
                 f"Failed to start ThreadedWebSocketManager: {e}", exc_info=True
             )
             return  # Exit if TWM fails to start
+
+        # --- State Reconciliation ---
+        logger.info("Verifying position state with exchange...")
+        actual_size = self._get_position_size()
+        expected_position = self.position  # From loaded state or default
+
+        logger.info(
+            f"Internal state position: {expected_position}, Exchange free balance query: {actual_size}"
+        )
+
+        needs_manual_intervention = False
+        if (
+            expected_position != 0 and actual_size <= 0
+        ):  # Expected position but none exists
+            logger.warning(
+                f"State file indicates position {expected_position}, but exchange reports size {actual_size}. Resetting internal state to flat."
+            )
+            self.position = 0
+            self._reset_sl_tp()
+            self._save_state()  # Save the corrected state
+        elif (
+            expected_position == 0 and actual_size > 0
+        ):  # Expected flat but position exists
+            logger.critical(
+                "CRITICAL STATE MISMATCH: State file indicates flat position, but exchange reports existing balance."
+            )
+            logger.critical(
+                f"  Actual size: {actual_size}. Cannot safely resume trading without knowing entry price/SL/TP."
+            )
+            logger.critical(
+                "  Manual intervention required: Please close the position on the exchange or delete the state file ({self.state_file_path}) to start fresh."
+            )
+            needs_manual_intervention = True
+        elif (
+            expected_position == 1 and actual_size < 0
+        ):  # Expected long, found short (unlikely but possible)
+            logger.critical(
+                "CRITICAL STATE MISMATCH: State file indicates LONG position, but exchange reports SHORT balance/position."
+            )
+            logger.critical("  Manual intervention required.")
+            needs_manual_intervention = True
+        elif expected_position == -1 and actual_size > 0:  # Expected short, found long
+            logger.critical(
+                "CRITICAL STATE MISMATCH: State file indicates SHORT position, but exchange reports LONG balance/position."
+            )
+            logger.critical("  Manual intervention required.")
+            needs_manual_intervention = True
+        else:  # States seem consistent (0 and 0, or 1 and >0, or -1 and <0 - assuming _get_position_size handles short representation)
+            logger.info(
+                "Internal state position appears consistent with exchange balance."
+            )
+
+        if needs_manual_intervention:
+            logger.error(
+                "Trading will not start due to critical state mismatch requiring manual intervention."
+            )
+            return  # Prevent trading from starting
+        # --- End State Reconciliation ---
 
         if self.bar_length in self.available_intervals:
             self.get_most_recent(historical_days)
@@ -919,6 +1005,7 @@ class Trader:
             )
             self.position = 0  # Correct state if needed
             self._reset_sl_tp()
+            self._save_state()
             return True
         logger.info(f"Actual position size to close: {actual_size}")
         # --- End Get Size ---
@@ -931,26 +1018,92 @@ class Trader:
 
         # Check if the order resulted in the position being closed
         if order and order.get("status") in ["FILLED", "PARTIALLY_FILLED"]:
-            # Assume market order fills completely or partially closes
-            # For simplicity, we assume a full close here. Real implementation might need
-            # to check filled quantity against position size.
             executed_qty = float(order.get("executedQty", 0))
-            # Use a tolerance for float comparison
             tolerance = 1e-8  # Adjust tolerance based on asset precision
+            # Use the actual executed quantity for PnL calculation
+            if executed_qty > 0:
+                # --- Calculate PnL and Log Trade ---
+                position_type = "Long" if self.position == 1 else "Short"
+                exit_price = (
+                    float(order.get("cummulativeQuoteQty", 0)) / executed_qty
+                    if executed_qty
+                    else 0
+                )
+                if exit_price == 0 and order.get("fills"):  # Fallback to avg fill price
+                    fill_prices = [float(f["price"]) for f in order["fills"]]
+                    fill_qtys = [float(f["qty"]) for f in order["fills"]]
+                    if sum(fill_qtys) > 0:
+                        exit_price = sum(
+                            p * q for p, q in zip(fill_prices, fill_qtys)
+                        ) / sum(fill_qtys)
+                if exit_price == 0:
+                    logger.warning(
+                        "Could not determine exit price for PnL calculation. Using entry price as fallback."
+                    )
+                    exit_price = self.entry_price or 0  # Fallback
+
+                if self.entry_price is not None:
+                    gross_pnl = (
+                        (exit_price - self.entry_price) * executed_qty * self.position
+                    )
+                    # Estimate commission (entry + exit)
+                    commission_rate = self.commission_bps / 10000.0
+                    commission_paid = (
+                        abs(self.entry_price * executed_qty)
+                        + abs(exit_price * executed_qty)
+                    ) * commission_rate
+                    net_pnl = gross_pnl - commission_paid
+                    self.cum_profits += net_pnl  # Update cumulative profit
+
+                    # Get exit timestamp (use event time from order if possible, else now)
+                    exit_time_ms = order.get("transactTime")
+                    exit_time_ts = (
+                        pd.Timestamp(exit_time_ms, unit="ms")
+                        if exit_time_ms
+                        else pd.Timestamp.now()
+                    )
+
+                    self._log_trade_to_csv(
+                        entry_time=self.entry_time,
+                        entry_price=self.entry_price,
+                        exit_time=exit_time_ts,
+                        exit_price=exit_price,
+                        position_type=position_type,
+                        executed_qty=executed_qty,
+                        gross_pnl=gross_pnl,
+                        commission_paid=commission_paid,
+                        net_pnl=net_pnl,
+                        exit_reason=context_message,  # Use the reason passed in
+                        entry_order_id=self.entry_order_id,
+                        exit_order_id=order.get("orderId"),
+                        cumulative_profit=self.cum_profits,
+                    )
+                else:
+                    logger.warning(
+                        "Cannot calculate PnL or log trade: Entry price is missing."
+                    )
+                # --- End PnL Calc and Log ---
+
+            # Check if it was a full close
             if abs(executed_qty - actual_size) < tolerance:
                 logger.info(
                     f"Position closed successfully (Order ID: {order.get('orderId')}). Executed: {executed_qty}, Expected: {actual_size}"
                 )
-                self._reset_sl_tp()  # Reset SL/TP state AFTER confirming close
-                self.position = 0  # Update position state AFTER confirming close
+                # <<< Call reset AFTER logging >>>
+                self._reset_sl_tp()  # Reset SL/TP state
+                self.position = 0  # Update position state
+                self.entry_order_id = None  # Clear entry order ID
+                self._save_state()
                 return True
             elif executed_qty > 0:
+                # Partial close - DON'T reset position, SL/TP, or save state fully reset
+                # Just log what happened, state saving might need refinement for partials
                 logger.warning(
-                    f"Close order partially filled ({executed_qty}/{actual_size}). Position might not be fully closed. State unchanged for safety."
+                    f"Close order partially filled ({executed_qty}/{actual_size}). Position NOT fully closed. State partially updated (cum_profit). Manual check advised."
                 )
-                # Keep self.position as it was, do not reset SL/TP yet.
-                # This needs more robust handling based on actual position tracking.
-                return False
+                # We logged the partial PnL, but don't reset the main state
+                self._save_state()  # Save updated cum_profits
+                return False  # Indicate not fully closed
             else:  # executed_qty is 0 despite FILLED/PARTIALLY_FILLED status
                 logger.error(
                     f"Close order status {order.get('status')} but executed quantity is 0. Failed to close. State unchanged."
@@ -990,7 +1143,43 @@ class Trader:
                     f"New position opened successfully (Order ID: {order.get('orderId')}). Executed Qty: {executed_qty}"
                 )
                 self.position = 1 if side == "BUY" else -1  # Update position state
+                self.entry_order_id = order.get("orderId")
+                # <<< Set Entry Time Here >>>
+                entry_time_ms = order.get("transactTime")
+                self.entry_time = (
+                    pd.Timestamp(entry_time_ms, unit="ms")
+                    if entry_time_ms
+                    else pd.Timestamp.now()
+                )
+                # <<< End Set Entry Time >>>
                 self._calculate_set_sl_tp(order)  # Set SL/TP based on entry
+                self._save_state()
+                # <<< LOG TRADE OPEN EVENT >>>
+                # Need entry time - should be stored when calculating SL/TP or here
+                # Let's assume self.entry_time is set correctly before this call
+                if self.entry_time:
+                    self._log_trade_to_csv(
+                        entry_time=self.entry_time,
+                        entry_price=self.entry_price,
+                        exit_time=None,
+                        exit_price=None,
+                        position_type=(
+                            "Long" if self.position == 1 else "Short"
+                        ),  # Indicate position type
+                        executed_qty=executed_qty,
+                        gross_pnl=None,
+                        commission_paid=None,
+                        net_pnl=None,
+                        exit_reason="Trade Open",  # Specific reason
+                        entry_order_id=self.entry_order_id,
+                        exit_order_id=None,
+                        cumulative_profit=self.cum_profits,  # Log current cum_profit at open
+                    )
+                else:
+                    logger.warning(
+                        "Cannot log trade open event: self.entry_time not set."
+                    )
+                # <<< END LOG TRADE OPEN >>>
                 return True
             else:
                 logger.warning(
@@ -1246,8 +1435,12 @@ class Trader:
         # --- Execute Exit Trade if Triggered ---
         if exit_reason:
             logger.info(f"Exit triggered: {exit_reason} at price ~{exit_price:.5f}")
-            self._close_open_position(context_message=f"Exit due to {exit_reason}")
-            return True  # Indicate exit occurred
+            closed_successfully = self._close_open_position(
+                context_message=f"Exit due to {exit_reason}"
+            )
+            if closed_successfully:
+                self._save_state()
+            return closed_successfully  # Indicate exit occurred (True if close was successful)
 
         return False  # No exit triggered
 
@@ -1382,6 +1575,123 @@ class Trader:
             )
 
     # --- End Websocket Health Check ---
+
+    # --- State Management Methods ---
+    def _get_state(self) -> Dict[str, Any]:
+        """Gathers the current trader state into a dictionary."""
+        return {
+            "position": self.position,
+            "entry_price": self.entry_price,
+            "current_stop_loss": self.current_stop_loss,
+            "current_take_profit": self.current_take_profit,
+            "tsl_peak_price": self.tsl_peak_price,
+            "trades": self.trades,  # Persist trade count
+            "cum_profits": self.cum_profits,  # Persist cumulative profits
+            # Add other simple state variables if needed
+        }
+
+    def _save_state(self) -> None:
+        """Saves the current trader state to the JSON file."""
+        state = self._get_state()
+        try:
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            with open(self.state_file_path, "w") as f:
+                json.dump(state, f, indent=4)
+            logger.info(f"Trader state saved to {self.state_file_path}")
+        except Exception as e:
+            logger.error(
+                f"Failed to save trader state to {self.state_file_path}: {e}",
+                exc_info=True,
+            )
+
+    def _load_state(self) -> None:
+        """Loads trader state from the JSON file if it exists."""
+        if not self.state_file_path.is_file():
+            logger.info("No existing state file found. Starting with default state.")
+            return
+
+        try:
+            with open(self.state_file_path, "r") as f:
+                state = json.load(f)
+            logger.info(f"Loading state from {self.state_file_path}")
+            # Apply loaded state (with defaults for safety)
+            self.position = state.get("position", 0)
+            self.entry_price = state.get("entry_price")  # Keep None if not present
+            self.current_stop_loss = state.get("current_stop_loss")
+            self.current_take_profit = state.get("current_take_profit")
+            self.tsl_peak_price = state.get("tsl_peak_price")
+            self.trades = state.get("trades", 0)
+            self.cum_profits = state.get("cum_profits", 0.0)
+            logger.info(
+                f"Loaded state: Position={self.position}, Entry={self.entry_price}, Trades={self.trades}, CumProfit={self.cum_profits}"
+            )
+            # If position is loaded as non-zero, SL/TP should ideally be present, but handle if not
+            if self.position != 0 and self.entry_price is None:
+                logger.warning(
+                    "Loaded non-zero position but entry_price is missing in state file. SL/TP might be invalid."
+                )
+                # Consider resetting position to 0 here for safety?
+                # self.position = 0
+                # self._reset_sl_tp()
+
+        except json.JSONDecodeError as e:
+            logger.error(
+                f"Error decoding state file {self.state_file_path}: {e}. Starting with default state."
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to load state from {self.state_file_path}: {e}. Starting with default state.",
+                exc_info=True,
+            )
+
+    # --- End State Management Methods ---
+
+    # --- Trade Logging Method ---
+    def _log_trade_to_csv(
+        self,
+        entry_time: Optional[pd.Timestamp],
+        entry_price: Optional[float],
+        exit_time: Optional[pd.Timestamp],
+        exit_price: Optional[float],
+        position_type: str,  # "Long", "Short", or perhaps "ENTRY"?
+        executed_qty: float,
+        gross_pnl: Optional[float],
+        commission_paid: Optional[float],
+        net_pnl: Optional[float],
+        exit_reason: Optional[str],
+        entry_order_id: Optional[str],
+        exit_order_id: Optional[str],
+        cumulative_profit: Optional[float],
+    ) -> None:
+        """Appends a trade event (entry or exit) record to the CSV file."""
+        trade_data = {
+            "Symbol": self.symbol,
+            "EntryTime": entry_time.isoformat() if entry_time else None,
+            "EntryPrice": entry_price,
+            "ExitTime": exit_time.isoformat() if exit_time else None,
+            "ExitPrice": exit_price,
+            "PositionType": position_type,
+            "Quantity": executed_qty,
+            "GrossPnL": gross_pnl,
+            "Commission": commission_paid,
+            "NetPnL": net_pnl,
+            "ExitReason": exit_reason,
+            "EntryOrderID": entry_order_id,
+            "ExitOrderID": exit_order_id,
+            "CumulativeProfit": cumulative_profit,  # Log profit *after* this trade
+        }
+        try:
+            file_exists = self.trades_csv_path.is_file()
+            df_trade = pd.DataFrame([trade_data])
+            df_trade.to_csv(
+                self.trades_csv_path, mode="a", header=not file_exists, index=False
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to log trade to CSV {self.trades_csv_path}: {e}", exc_info=True
+            )
+
+    # --- End Trade Logging Method ---
 
 
 if __name__ == "__main__":
@@ -1613,6 +1923,7 @@ if __name__ == "__main__":
             apply_seasonality_filter=args.apply_seasonality_filter,
             allowed_trading_hours_utc=args.allowed_trading_hours_utc,
             apply_seasonality_to_symbols=args.apply_seasonality_to_symbols,
+            commission_bps=args.commission,  # Use args.commission
         )
         trader.start_trading(historical_days=args.days)
     except Exception as e:
