@@ -140,3 +140,6 @@ results/
 # Config files (optional - uncomment if secrets are stored here)
 # config/
 # secrets.yaml 
+
+# MacOs
+.DS_Store
