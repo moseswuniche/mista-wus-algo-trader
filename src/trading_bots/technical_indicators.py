@@ -7,7 +7,7 @@ def calculate_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     Calculates the Average True Range (ATR) using Wilder's smoothing (RMA).
 
     Args:
-        df: DataFrame containing 'High', 'Low', 'Close' columns.
+        df: DataFrame containing 'high', 'low', 'close' columns (lowercase).
         period: The lookback period for ATR calculation.
 
     Returns:
@@ -16,16 +16,18 @@ def calculate_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     Raises:
         ValueError: If required columns are missing or period is invalid.
     """
-    if not all(col in df.columns for col in ["High", "Low", "Close"]):
+    required_cols = ["high", "low", "close"]
+    if not all(col in df.columns for col in required_cols):
+        missing = [col for col in required_cols if col not in df.columns]
         raise ValueError(
-            "DataFrame must contain 'High', 'Low', and 'Close' columns for ATR calculation."
+            f"DataFrame must contain {required_cols} columns for ATR calculation. Missing: {missing}"
         )
     if not isinstance(period, int) or period <= 0:
         raise ValueError("ATR period must be a positive integer.")
 
-    high_low = df["High"] - df["Low"]
-    high_close = np.abs(df["High"] - df["Close"].shift())
-    low_close = np.abs(df["Low"] - df["Close"].shift())
+    high_low = df["high"] - df["low"]
+    high_close = np.abs(df["high"] - df["close"].shift())
+    low_close = np.abs(df["low"] - df["close"].shift())
 
     tr = pd.DataFrame({"hl": high_low, "hc": high_close, "lc": low_close}).max(axis=1)
 
@@ -54,7 +56,7 @@ def calculate_sma(series: pd.Series, period: int) -> pd.Series:
     Calculates the Simple Moving Average (SMA).
 
     Args:
-        series: pandas Series of prices (e.g., 'Close').
+        series: pandas Series of prices (e.g., 'close').
         period: The lookback period for SMA calculation.
 
     Returns:
@@ -73,7 +75,7 @@ def calculate_ema(df: pd.DataFrame, period: int) -> pd.Series:
     Calculates the Exponential Moving Average (EMA) using HLC/3 as input.
 
     Args:
-        df: DataFrame containing 'High', 'Low', 'Close' columns.
+        df: DataFrame containing 'high', 'low', 'close' columns (lowercase).
         period: The lookback period for EMA calculation.
 
     Returns:
@@ -82,14 +84,16 @@ def calculate_ema(df: pd.DataFrame, period: int) -> pd.Series:
     Raises:
         ValueError: If required columns are missing or period is invalid.
     """
-    if not all(col in df.columns for col in ["High", "Low", "Close"]):
+    required_cols = ["high", "low", "close"]
+    if not all(col in df.columns for col in required_cols):
+        missing = [col for col in required_cols if col not in df.columns]
         raise ValueError(
-            "DataFrame must contain 'High', 'Low', and 'Close' columns for EMA calculation."
+            f"DataFrame must contain {required_cols} columns for EMA calculation. Missing: {missing}"
         )
     if not isinstance(period, int) or period <= 0:
         raise ValueError("EMA period must be a positive integer.")
 
     # Use typical price (HLC/3) for EMA calculation as it's less prone to
     # outlier wicks compared to just Close, especially for trend filtering.
-    typical_price = (df["High"] + df["Low"] + df["Close"]) / 3
+    typical_price = (df["high"] + df["low"] + df["close"]) / 3
     return typical_price.ewm(span=period, adjust=False, min_periods=period).mean()

@@ -1,6 +1,6 @@
 """Pydantic models for configuration validation."""
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, RootModel
 from typing import Dict, List, Optional, Any, Union
 import re
 
@@ -37,53 +37,63 @@ ParamValue = Union[str, int, float, bool, None]
 
 
 # Model for a single strategy's parameter grid
-class StrategyOptimizeParams(BaseModel):
-    """Represents the parameter grid for a single strategy."""
+# Use RootModel for Pydantic v2 compatibility when the model is just a dict
+class StrategyOptimizeParams(RootModel[Dict[str, List[ParamValue]]]):
+    """Represents the parameter grid for a single strategy using RootModel."""
 
-    # Using Any as type hint for list elements initially,
-    # specific validation can be added if needed.
-    # Using Dict[str, List[ParamValue]] enforces list structure
-    __root__: Dict[str, List[ParamValue]]
+    # The actual data is accessed via self.root
 
-    @field_validator("*", mode="before")  # Validate each list in the dict
+    @field_validator("root", mode="before")  # Validate the root dictionary
     @classmethod
-    def check_param_list(cls, v):
-        if not isinstance(v, list):
-            raise ValueError("Parameter grid value must be a list")
-        # Optional: Add checks for list contents if needed
-        # e.g., ensure values are of compatible types
-        return v
+    def check_param_lists(cls, data):
+        if not isinstance(data, dict):
+            raise ValueError("Strategy parameters must be a dictionary")
+        for param_name, v in data.items():
+            if not isinstance(v, list):
+                raise ValueError(
+                    f"Parameter grid value for '{param_name}' must be a list"
+                )
+            # Optional: Add checks for list contents if needed
+            # e.g., ensure values are of compatible types
+        return data
 
 
 # Model for the entire optimize_params.yaml structure
 # Uses a dictionary where keys are symbol strings (like "BTCUSDT")
 # and values are dictionaries where keys are strategy class names
-# and values are the parameter grids (validated by StrategyOptimizeParams).
+# and values are the parameter grids (validated by StrategyOptimizeParams type).
 # Using RootModel for top-level dictionary validation
-class OptimizeParamsConfig(BaseModel):
-    """Pydantic model for the overall optimize_params.yaml structure."""
+class OptimizeParamsConfig(
+    RootModel[Dict[str, Dict[str, Dict[str, List[ParamValue]]]]]
+):
+    """Pydantic model for the overall optimize_params.yaml structure using RootModel."""
 
-    __root__: Dict[str, Dict[str, Dict[str, List[ParamValue]]]]
+    # The actual data is accessed via self.root
 
-    @field_validator("*", mode="before")  # Validate each symbol's entry
+    @field_validator("root", mode="before")  # Validate the root dictionary structure
     @classmethod
-    def check_symbol_entry(cls, v):
-        if not isinstance(v, dict):
-            raise ValueError("Symbol entry must be a dictionary of strategies")
-        for strategy_name, params_dict in v.items():
-            if not isinstance(params_dict, dict):
+    def check_structure(cls, data):
+        if not isinstance(data, dict):
+            raise ValueError("Optimize params config must be a dictionary of symbols")
+
+        for symbol, strategy_dict in data.items():
+            if not isinstance(strategy_dict, dict):
                 raise ValueError(
-                    f"Strategy entry '{strategy_name}' must be a dictionary"
+                    f"Entry for symbol '{symbol}' must be a dictionary of strategies"
                 )
-            # Further validation of params_dict contents happens implicitly
-            # if we can make StrategyOptimizeParams work directly here,
-            # but dynamic keys make it tricky. Let's validate the inner structure.
-            for param_key, param_list in params_dict.items():
-                if not isinstance(param_list, list):
+
+            for strategy_name, params_dict in strategy_dict.items():
+                if not isinstance(params_dict, dict):
                     raise ValueError(
-                        f"Parameter grid for '{param_key}' in strategy '{strategy_name}' must be a list"
+                        f"Strategy entry '{strategy_name}' for symbol '{symbol}' must be a dictionary"
                     )
-        return v
+                # Validate the inner parameter grid structure
+                for param_key, param_list in params_dict.items():
+                    if not isinstance(param_list, list):
+                        raise ValueError(
+                            f"Parameter grid for '{param_key}' in strategy '{strategy_name}' (symbol '{symbol}') must be a list"
+                        )
+        return data
 
 
 # --- Backtest Run Configuration Model ---
@@ -197,9 +207,7 @@ if __name__ == "__main__":
     try:
         # Note: Pydantic v2 uses model_validate
         # Using the specific validator logic within OptimizeParamsConfig now
-        validated_optimize = OptimizeParamsConfig.model_validate(
-            {"__root__": optimize_data}
-        )
+        validated_optimize = OptimizeParamsConfig.model_validate(optimize_data)
         print("Optimize Params Config Valid:")
         # print(validated_optimize.model_dump_json(indent=2)) # Dump the RootModel content
     except ValidationError as e:
@@ -209,7 +217,8 @@ if __name__ == "__main__":
     # Test invalid data
     invalid_optimize_data = {"LTCUSDT": {"MACross": {"fast_period": 10}}}  # Not a list
     try:
-        OptimizeParamsConfig.model_validate({"__root__": invalid_optimize_data})
+        # When using RootModel, validate the data directly, not wrapped in {'__root__': ...}
+        OptimizeParamsConfig.model_validate(invalid_optimize_data)
     except ValidationError as e:
         print("\\nOptimize Params Config Invalid (Test):")
         print(e)

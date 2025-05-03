@@ -63,28 +63,35 @@ class BollingerBandReversionStrategy(Strategy):
         lower_band = middle_band - (rolling_std * std_dev)
         return middle_band, upper_band, lower_band
 
-    def generate_signals(self, data: pd.DataFrame) -> pd.Series:
+    def generate_signals(self, data: pd.DataFrame) -> pd.DataFrame:
         """
         Generates trading signals based on Bollinger Band levels, optionally filtered by trend.
 
         Args:
-            data: DataFrame containing at least the 'Close' price column.
-                  Requires 'High', 'Low', 'Close' if trend filter is EMA.
+            data: DataFrame containing at least the 'close' price column (lowercase).
+                  Requires 'high', 'low', 'close' if trend filter is EMA.
 
         Returns:
-            A pandas Series containing the position signal (1 for long, -1 for short, 0 for neutral).
+            A pandas DataFrame containing the position signal (1 for long, -1 for short, 0 for neutral).
         """
-        if "Close" not in data.columns:
-            raise ValueError("Input DataFrame must contain a 'Close' column.")
+        required_close_col = "close"
+        if required_close_col not in data.columns:
+            raise ValueError(
+                f"Input DataFrame must contain a '{required_close_col}' column."
+            )
+
+        required_hlc_cols = ["high", "low", "close"]
         if (
             self.trend_filter_period
             and self.trend_filter_use_ema
-            and not all(c in data.columns for c in ["High", "Low", "Close"])
+            and not all(c in data.columns for c in required_hlc_cols)
         ):
-            raise ValueError("Data must contain High, Low, Close for EMA trend filter.")
+            raise ValueError(
+                f"Data must contain {required_hlc_cols} for EMA trend filter."
+            )
 
         df = data.copy()
-        close_prices = df["Close"]
+        close_prices = df[required_close_col]
 
         # Calculate Bollinger Bands
         middle, upper, lower = self._calculate_bollinger_bands(
@@ -103,13 +110,13 @@ class BollingerBandReversionStrategy(Strategy):
         if self.trend_filter_period is not None and self.trend_filter_period > 0:
             trend_col_name = f"trend_ma_{self.trend_filter_period}"
             if self.trend_filter_use_ema:
-                df[trend_col_name] = calculate_ema(
-                    df, period=self.trend_filter_period
-                )  # Use HLC based EMA
+                df[trend_col_name] = calculate_ema(df, period=self.trend_filter_period)
             else:
-                df[trend_col_name] = close_prices.rolling(
-                    window=self.trend_filter_period
-                ).mean()
+                df[trend_col_name] = (
+                    df[required_close_col]
+                    .rolling(window=self.trend_filter_period)
+                    .mean()
+                )
 
             # Filter signals based on trend
             # Block longs in downtrend
@@ -137,4 +144,5 @@ class BollingerBandReversionStrategy(Strategy):
         # Fill NaNs (e.g., from initial MA/BB calculation)
         df["signal"] = df["signal"].fillna(0)
 
-        return df["signal"].astype(int)
+        # Return the entire DataFrame with the signal column
+        return df

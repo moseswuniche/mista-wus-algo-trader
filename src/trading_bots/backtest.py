@@ -175,6 +175,25 @@ def run_backtest(
 
     # --- Existing Data Prep & Indicator Calculation --- #
     df = data.copy()
+    # Ensure standard lowercase column names
+    df.rename(
+        columns={
+            "Timestamp": "timestamp",  # Ensure timestamp column if it exists
+            "Open": "open",
+            "High": "high",
+            "Low": "low",
+            "Close": "close",
+            "Volume": "volume",
+        },
+        inplace=True,
+    )
+    # Verify required columns exist after renaming
+    required_cols = ["open", "high", "low", "close", "volume"]
+    if not all(col in df.columns for col in required_cols):
+        missing = [col for col in required_cols if col not in df.columns]
+        logger.error(f"Dataframe missing required columns after renaming: {missing}")
+        return None
+
     commission = commission_bps / 10000.0  # Convert basis points to decimal
 
     # --- Prepare Filter-Related Data --- #
@@ -252,267 +271,241 @@ def run_backtest(
         trailing_stop_loss_pct
     )
 
-    # Iterate through bars (use df length)
-    for i in range(1, len(df)):
-        timestamp = df.index[i]
-        prev_timestamp = df.index[i - 1]
+    # --- Vectorized Iteration (Itertuples) --- #
+    logger.debug("Starting backtest loop...")
+    for i, row in enumerate(df.itertuples()):
+        # --- Pre-calculation for current step --- #
+        current_time = row.Index
+        current_price = row.close
+        signal = getattr(row, "signal", 0)
+        high_price = row.high
+        low_price = row.low
 
-        # Use df for prices
-        open_price = df["Open"].iloc[i]
-        high_price = df["High"].iloc[i]
-        low_price = df["Low"].iloc[i]
-        close_price = df["Close"].iloc[i]
-        prev_close_price = df["Close"].iloc[i - 1]
-
-        if pd.isna(equity_curve.iloc[i]):
-            equity_curve.iloc[i] = equity_curve.iloc[i - 1]
-
-        if (
-            pd.isna(open_price)
-            or pd.isna(high_price)
-            or pd.isna(low_price)
-            or pd.isna(close_price)
-            or pd.isna(prev_close_price)
-        ):
-            logger.warning(f"NaN price at {timestamp}. Skipping bar.")
-            continue
-
-        unrealized_pnl_change = 0
+        # --- Update Equity Curve --- #
+        # Use previous balance if not the first row
+        prev_balance = equity_curve.iloc[i - 1] if i > 0 else initial_balance
+        # Calculate current equity based on open position PnL
         if current_pos != 0:
-            unrealized_pnl_change = (
-                (close_price - prev_close_price) * units * current_pos
-            )
-        equity_curve.iloc[i] += unrealized_pnl_change
+            pnl = current_pos * (current_price - entry_price) * units
+            current_equity = prev_balance + pnl
+        else:
+            current_equity = prev_balance
+        equity_curve.iloc[i] = current_equity
 
-        # --- Filtering Logic (Use EFFECTIVE settings) ---
-        trade_allowed_this_bar = True
+        # --- Apply Filters (Skip signals if filters active) --- #
+        filtered_out = False
+        # ATR Filter Check
+        if apply_atr_filter and hasattr(row, "atr") and row.atr is not None:
+            atr_threshold = row.atr * atr_filter_multiplier
+            if atr_filter_sma_period > 0 and hasattr(row, "atr_sma") and row.atr_sma is not None:
+                # If SMA is enabled, allow trade only if price is above/below ATR threshold relative to SMA
+                # This part might need refinement based on the exact ATR filter logic desired
+                # Example: require price to be significantly volatile compared to recent average volatility
+                # Simplified version: Check if ATR itself is above the threshold (basic volatility check)
+                if row.atr < (atr_threshold / atr_filter_multiplier): # Check original ATR value for threshold
+                    filtered_out = True
+                    # logger.debug(f"{current_time}: Filtered by ATR (value {row.atr:.4f} < threshold {atr_threshold:.4f}) using SMA baseline") # COMMENTED OUT
+            elif row.atr < atr_threshold:
+                    filtered_out = True
+                    # logger.debug(f"{current_time}: Filtered by ATR (value {row.atr:.4f} < threshold {atr_threshold:.4f})") # COMMENTED OUT
 
-        # Filter 1: Seasonality (Uses effective settings)
-        if apply_seasonality_to_this_symbol:
-            start_hour, end_hour = parsed_trading_hours  # type: ignore
-            ts_aware = (
-                timestamp.tz_convert("UTC")
-                if timestamp.tz
-                else timestamp.tz_localize("UTC")
-            )
-            if not (start_hour <= ts_aware.hour < end_hour):
-                trade_allowed_this_bar = False
-                # logger.debug(f"[{timestamp}] Trade blocked by seasonality filter.")
+        # Seasonality Filter Check
+        if (
+            apply_seasonality_to_this_symbol
+            and not filtered_out
+            and parsed_trading_hours
+        ):
+            current_hour = current_time.hour
+            start_hour, end_hour = parsed_trading_hours
+            if not (start_hour <= current_hour < end_hour):
+                filtered_out = True
+                # logger.debug(f"{current_time}: Filtered by Seasonality (hour {current_hour} outside {start_hour}-{end_hour})") # COMMENTED OUT
+                # If filtered by seasonality, force exit any open position
+                signal = -current_pos if current_pos != 0 else 0 # Force exit
 
-        # Filter 2: ATR Volatility (Uses effective settings and RECALCULATED columns)
-        if apply_atr_filter and trade_allowed_this_bar:
-            # Use the recalculated 'atr' column
-            current_atr = df["atr"].iloc[i]
-            threshold = 0.0  # Initialize
-
-            if atr_filter_sma_period > 0:
-                # Use the recalculated 'atr_sma' column for the baseline
-                atr_sma_effective_val = df["atr_sma"].iloc[i]
-                if not pd.isna(atr_sma_effective_val):
-                    threshold = atr_sma_effective_val * atr_filter_multiplier
-                else:
-                    # Fallback if SMA is NaN (e.g., during initial window)
-                    # Use current ATR * multiplier as threshold only if current ATR is not NaN
-                    if not pd.isna(current_atr):
-                        threshold = current_atr * atr_filter_multiplier
-                    else:
-                        threshold = np.nan  # Keep threshold as NaN if both are NaN
-
-            else:
-                # If no SMA period, use current ATR * multiplier if current ATR is not NaN
-                if not pd.isna(current_atr):
-                    threshold = current_atr * atr_filter_multiplier
-                else:
-                    threshold = np.nan  # Keep threshold as NaN if current ATR is NaN
-
-            # Check if trade is allowed
-            if pd.isna(current_atr) or pd.isna(threshold):
-                # If ATR or threshold is NaN (e.g., at the start), decide whether to allow trade.
-                # Current behavior: Allow trade (pass). Consider blocking if needed.
-                pass
-                # logger.debug(f"[{timestamp}] ATR or threshold NaN, filter not applied.")
-            elif current_atr < threshold:
-                trade_allowed_this_bar = False
-                # logger.debug(f"[{timestamp}] Trade blocked by ATR filter (ATR={current_atr:.4f} < Threshold={threshold:.4f}).")
-
-        # --- Check for Exits (SL/TP/TSL) based on intra-bar High/Low ---
-        exit_price = None
+        # --- Check for Stop Loss / Take Profit / Trailing Stop --- #
         exit_reason = None
-        if current_pos == 1:  # Long position
-            # Update TSL peak price
-            if tsl_peak_price is not None:
-                tsl_peak_price = max(tsl_peak_price, high_price)
-                # Recalculate TSL level based on updated peak
-                if isinstance(trailing_stop_loss_pct_cleaned, float):
-                    # Add redundant check for tsl_peak_price and explicit cast
-                    if tsl_peak_price is not None:
-                        tsl_pct_float: float = float(trailing_stop_loss_pct_cleaned)
-                        tsl_level = tsl_peak_price * (1 - tsl_pct_float)
-                        stop_loss_level = max(
-                            stop_loss_level or -np.inf, tsl_level
-                        )  # TSL can only move SL up
+        exit_price = current_price # Default exit price if triggered by signal change
 
-            # Check exits (prioritize SL > TP)
+        if current_pos == 1: # Long position checks
+            # Trailing Stop Loss Update & Check
+            if trailing_stop_loss_pct_cleaned is not None:
+                if tsl_peak_price is None or high_price > tsl_peak_price:
+                    tsl_peak_price = high_price
+                potential_tsl_level = tsl_peak_price * (1 - trailing_stop_loss_pct_cleaned)
+                if stop_loss_level is None or potential_tsl_level > stop_loss_level:
+                    # if stop_loss_level != potential_tsl_level: # Check prevents logging spam if level unchanged
+                    #      logger.debug(f"{current_time}: Updated TSL level (Long) to {potential_tsl_level:.4f} from {stop_loss_level}") # COMMENTED OUT
+                    stop_loss_level = potential_tsl_level
+
+            # Stop Loss Check
             if stop_loss_level is not None and low_price <= stop_loss_level:
-                exit_price = stop_loss_level  # Exit at SL level
                 exit_reason = "Stop Loss"
+                exit_price = stop_loss_level # Exit at stop level
+                signal = -1 # Force exit signal
+            # Take Profit Check
             elif take_profit_level is not None and high_price >= take_profit_level:
-                exit_price = take_profit_level  # Exit at TP level
                 exit_reason = "Take Profit"
+                exit_price = take_profit_level # Exit at profit level
+                signal = -1 # Force exit signal
 
-        elif current_pos == -1:  # Short position
-            # Update TSL peak price (using min for shorts)
-            if tsl_peak_price is not None:
-                tsl_peak_price = min(tsl_peak_price, low_price)
-                # Recalculate TSL level based on updated peak
-                if isinstance(trailing_stop_loss_pct_cleaned, float):
-                    # Add redundant check for tsl_peak_price and explicit cast
-                    if tsl_peak_price is not None:
-                        tsl_pct_float = float(trailing_stop_loss_pct_cleaned)
-                        tsl_level = tsl_peak_price * (1 + tsl_pct_float)
-                        stop_loss_level = min(
-                            stop_loss_level or np.inf, tsl_level
-                        )  # TSL can only move SL down
+        elif current_pos == -1: # Short position checks
+            # Trailing Stop Loss Update & Check
+            if trailing_stop_loss_pct_cleaned is not None:
+                if tsl_peak_price is None or low_price < tsl_peak_price:
+                    tsl_peak_price = low_price
+                potential_tsl_level = tsl_peak_price * (1 + trailing_stop_loss_pct_cleaned)
+                if stop_loss_level is None or potential_tsl_level < stop_loss_level:
+                    # if stop_loss_level != potential_tsl_level: # Check prevents logging spam if level unchanged
+                    #     logger.debug(f"{current_time}: Updated TSL level (Short) to {potential_tsl_level:.4f} from {stop_loss_level}") # COMMENTED OUT
+                    stop_loss_level = potential_tsl_level
 
-            # Check exits (prioritize SL > TP)
+            # Stop Loss Check
             if stop_loss_level is not None and high_price >= stop_loss_level:
-                exit_price = stop_loss_level  # Exit at SL level
                 exit_reason = "Stop Loss"
+                exit_price = stop_loss_level # Exit at stop level
+                signal = 1 # Force exit signal
+            # Take Profit Check
             elif take_profit_level is not None and low_price <= take_profit_level:
-                exit_price = take_profit_level  # Exit at TP level
                 exit_reason = "Take Profit"
+                exit_price = take_profit_level # Exit at profit level
+                signal = 1 # Force exit signal
 
-        # --- Process Exit if Triggered Intra-Bar ---
-        if exit_price is not None:
-            pnl = (exit_price - entry_price) * units * current_pos
-            commission = (
-                abs(exit_price * units * commission) * 2
-            )  # Entry + Exit commission
-            net_pnl = pnl - commission
+        # --- Position Management based on Signal --- #
+        if filtered_out and signal != -current_pos: # If filtered out, ignore new entry signals
+             if signal != 0 and current_pos == 0 :
+                 # logger.debug(f"{current_time}: Entry signal {signal} ignored due to active filter.") # COMMENTED OUT
+                 pass # Explicitly do nothing
+             signal = 0 # Ignore entry signal if filtered
+
+        if current_pos == 0:
+            if signal == 1:
+                # Enter Long
+                current_pos = 1
+                entry_price = current_price
+                entry_time = current_time
+                trade_count += 1
+                commission_cost = entry_price * units * commission
+                balance -= commission_cost
+                stop_loss_level = entry_price * (1 - stop_loss_pct_cleaned) if stop_loss_pct_cleaned is not None else None
+                take_profit_level = entry_price * (1 + take_profit_pct_cleaned) if take_profit_pct_cleaned is not None else None
+                tsl_peak_price = entry_price # Initialize TSL peak
+                # logger.debug(f"{current_time}: ENTER LONG @ {entry_price:.4f}, Units: {units}, Commission: {commission_cost:.4f}, Balance: {balance:.2f}, SL: {stop_loss_level}, TP: {take_profit_level}") # COMMENTED OUT
+            elif signal == -1:
+                # Enter Short
+                current_pos = -1
+                entry_price = current_price
+                entry_time = current_time
+                trade_count += 1
+                commission_cost = entry_price * units * commission
+                balance -= commission_cost
+                stop_loss_level = entry_price * (1 + stop_loss_pct_cleaned) if stop_loss_pct_cleaned is not None else None
+                take_profit_level = entry_price * (1 - take_profit_pct_cleaned) if take_profit_pct_cleaned is not None else None
+                tsl_peak_price = entry_price # Initialize TSL peak
+                # logger.debug(f"{current_time}: ENTER SHORT @ {entry_price:.4f}, Units: {units}, Commission: {commission_cost:.4f}, Balance: {balance:.2f}, SL: {stop_loss_level}, TP: {take_profit_level}") # COMMENTED OUT
+
+        elif current_pos == 1 and signal == -1:
+            # Exit Long
+            pnl = (exit_price - entry_price) * units
+            commission_cost = exit_price * units * commission
+            net_pnl = pnl - commission_cost
             balance += net_pnl
-            trade_count += 1
-            if net_pnl > 0:
-                winning_trades += 1
-
+            if net_pnl > 0: winning_trades += 1
             trade_log.append(
                 {
                     "Entry Time": entry_time,
+                    "Exit Time": current_time,
+                    "Direction": "Long",
                     "Entry Price": entry_price,
-                    "Exit Time": timestamp,
                     "Exit Price": exit_price,
-                    "Position": "Long" if current_pos == 1 else "Short",
-                    "Units": units,
-                    "Gross PnL": pnl,
-                    "Commission": commission,
-                    "Net PnL": net_pnl,
-                    "Exit Reason": exit_reason,
-                    "Balance": balance,
+                    "Profit/Loss": net_pnl,
+                    "Commission": commission_cost,
+                    "Exit Reason": exit_reason or "Signal",
                 }
             )
-
-            # Update equity curve for the realized PnL
-            equity_curve.iloc[i] = balance
-
-            # Reset position state
+            # logger.debug(f"{current_time}: EXIT LONG @ {exit_price:.4f} from {entry_price:.4f}, Reason: {exit_reason or 'Signal'}, PnL: {net_pnl:.2f}, Commission: {commission_cost:.4f}, Balance: {balance:.2f}") # COMMENTED OUT
             current_pos = 0
             entry_price = 0.0
             entry_time = None
             stop_loss_level = None
             take_profit_level = None
             tsl_peak_price = None
+            # Check if we need to enter short immediately
+            if not filtered_out and getattr(row, "signal", 0) == -1: # Use original signal if not forced exit
+                 # Enter Short immediately after exit
+                 current_pos = -1
+                 entry_price = current_price # Use current row close for immediate entry
+                 entry_time = current_time
+                 trade_count += 1
+                 commission_cost_entry = entry_price * units * commission
+                 balance -= commission_cost_entry
+                 stop_loss_level = entry_price * (1 + stop_loss_pct_cleaned) if stop_loss_pct_cleaned is not None else None
+                 take_profit_level = entry_price * (1 - take_profit_pct_cleaned) if take_profit_pct_cleaned is not None else None
+                 tsl_peak_price = entry_price
+                 # logger.debug(f"{current_time}: ENTER SHORT (Immediate) @ {entry_price:.4f}, Units: {units}, Commission: {commission_cost_entry:.4f}, Balance: {balance:.2f}, SL: {stop_loss_level}, TP: {take_profit_level}") # COMMENTED OUT
 
-        # --- Check for New Signals & Potential Entries (if flat and not filtered) ---
-        signal = df["signal"].iloc[i]
-        if current_pos == 0 and trade_allowed_this_bar:
-            if signal == 1:  # Go Long
-                current_pos = 1
-                entry_price = close_price  # Enter at close of signal bar
-                entry_time = timestamp
-                # Set initial SL/TP/TSL levels based on _cleaned effective values
-                if isinstance(stop_loss_pct_cleaned, float):
-                    # Explicitly use the float value
-                    stop_loss_level = entry_price * (1 - float(stop_loss_pct_cleaned))
-                else:
-                    stop_loss_level = None
-                if isinstance(take_profit_pct_cleaned, float):
-                    # Add assert for type checker back
-                    assert isinstance(take_profit_pct_cleaned, float)
-                    # Add assert for entry_price as well
-                    assert isinstance(entry_price, float)
-                    # Directly use the variable known to be float
-                    take_profit_level = entry_price * (1 - take_profit_pct_cleaned)  # type: ignore[operator]
-                else:
-                    take_profit_level = None
-                tsl_peak_price = (
-                    entry_price
-                    if isinstance(trailing_stop_loss_pct_cleaned, float)
-                    else None
-                )
 
-            elif signal == -1:  # Go Short
-                current_pos = -1
-                entry_price = close_price  # Enter at close of signal bar
-                entry_time = timestamp
-                # Set initial SL/TP/TSL levels based on _cleaned effective values
-                if isinstance(stop_loss_pct_cleaned, float):
-                    stop_loss_level = entry_price * (1 + float(stop_loss_pct_cleaned))
-                else:
-                    stop_loss_level = None
-                if isinstance(take_profit_pct_cleaned, float):
-                    # Add assert for type checker back
-                    assert isinstance(take_profit_pct_cleaned, float)
-                    # Add assert for entry_price as well
-                    assert isinstance(entry_price, float)
-                    # Directly use the variable known to be float
-                    take_profit_level = entry_price * (1 - take_profit_pct_cleaned)  # type: ignore[operator]
-                else:
-                    take_profit_level = None
-                tsl_peak_price = (
-                    entry_price
-                    if isinstance(trailing_stop_loss_pct_cleaned, float)
-                    else None
-                )
+        elif current_pos == -1 and signal == 1:
+            # Exit Short
+            pnl = (entry_price - exit_price) * units # Reversed for short
+            commission_cost = exit_price * units * commission
+            net_pnl = pnl - commission_cost
+            balance += net_pnl
+            if net_pnl > 0: winning_trades += 1
+            trade_log.append(
+                {
+                    "Entry Time": entry_time,
+                    "Exit Time": current_time,
+                    "Direction": "Short",
+                    "Entry Price": entry_price,
+                    "Exit Price": exit_price,
+                    "Profit/Loss": net_pnl,
+                    "Commission": commission_cost,
+                    "Exit Reason": exit_reason or "Signal",
+                }
+            )
+            # logger.debug(f"{current_time}: EXIT SHORT @ {exit_price:.4f} from {entry_price:.4f}, Reason: {exit_reason or 'Signal'}, PnL: {net_pnl:.2f}, Commission: {commission_cost:.4f}, Balance: {balance:.2f}") # COMMENTED OUT
+            current_pos = 0
+            entry_price = 0.0
+            entry_time = None
+            stop_loss_level = None
+            take_profit_level = None
+            tsl_peak_price = None
+             # Check if we need to enter long immediately
+            if not filtered_out and getattr(row, "signal", 0) == 1: # Use original signal if not forced exit
+                 # Enter Long immediately after exit
+                 current_pos = 1
+                 entry_price = current_price # Use current row close for immediate entry
+                 entry_time = current_time
+                 trade_count += 1
+                 commission_cost_entry = entry_price * units * commission
+                 balance -= commission_cost_entry
+                 stop_loss_level = entry_price * (1 - stop_loss_pct_cleaned) if stop_loss_pct_cleaned is not None else None
+                 take_profit_level = entry_price * (1 + take_profit_pct_cleaned) if take_profit_pct_cleaned is not None else None
+                 tsl_peak_price = entry_price
+                 # logger.debug(f"{current_time}: ENTER LONG (Immediate) @ {entry_price:.4f}, Units: {units}, Commission: {commission_cost_entry:.4f}, Balance: {balance:.2f}, SL: {stop_loss_level}, TP: {take_profit_level}") # COMMENTED OUT
 
-        # --- Check for Exit Signal (if in position and not exited by SL/TP/TSL) ---
-        elif current_pos != 0:
-            exit_signal = False
-            if current_pos == 1 and signal == -1:
-                exit_signal = True
-            if current_pos == -1 and signal == 1:
-                exit_signal = True
+        # Log equity at each step (or less frequently if needed)
+        # logger.debug(f"{current_time}: Equity: {equity_curve.iloc[i]:.2f}, Balance: {balance:.2f}, Position: {current_pos}") # COMMENTED OUT
 
-            if exit_signal:
-                exit_price = close_price  # Exit at close of signal bar
-                pnl = (exit_price - entry_price) * units * current_pos
-                commission = abs(exit_price * units * commission) * 2
-                net_pnl = pnl - commission
-                balance += net_pnl
-                trade_count += 1
-                if net_pnl > 0:
-                    winning_trades += 1
+    # --- End Backtest Loop --- #
+    logger.debug("Backtest loop finished.")
 
-                trade_log.append(
-                    {
-                        "Entry Time": entry_time,
-                        "Entry Price": entry_price,
-                        "Exit Time": timestamp,
-                        "Exit Price": exit_price,
-                        "Position": "Long" if current_pos == 1 else "Short",
-                        "Units": units,
-                        "Gross PnL": pnl,
-                        "Commission": commission,
-                        "Net PnL": net_pnl,
-                        "Exit Reason": "Signal",
-                        "Balance": balance,
-                    }
-                )
-                equity_curve.iloc[i] = balance
-                current_pos = 0
-                entry_price = 0.0
-                entry_time = None
-                stop_loss_level = None
-                take_profit_level = None
-                tsl_peak_price = None
+    # --- Final Equity Calculation --- #
+    # If still in position at the end, calculate final equity based on last price
+    if current_pos != 0:
+        last_price = df["close"].iloc[-1]
+        pnl = current_pos * (last_price - entry_price) * units
+        # No exit commission applied here, assuming position is marked-to-market
+        final_equity = balance + pnl  # Use final balance before closing PnL
+        equity_curve.iloc[-1] = final_equity  # Update last equity point
+        logger.debug(
+            f"End of data: Marked-to-market final equity: {final_equity:.2f} (Position {current_pos})"
+        )
+    else:
+        final_equity = balance  # Final equity is the final balance if flat
+        equity_curve.iloc[-1] = final_equity
+        logger.debug(f"End of data: Final equity (flat): {final_equity:.2f}")
 
     # --- Final Calculations & Summary ---
     equity_curve.ffill(inplace=True)  # Fill any NaNs from skipped bars
