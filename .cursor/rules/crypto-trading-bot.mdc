@@ -1,0 +1,95 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+
+description: Trading Bot Rules
+globs: ["**/*.py", "**/*.yaml", "**/strategies/*", "**/config/*"]
+alwaysApply: true
+
+# Core Project Rules
+
+1. Strategy Development:
+- All strategies must inherit from BaseStrategy.
+- Example template:
+  class CustomStrategy(BaseStrategy):
+      params = (
+          ('stop_loss', 0.015),  # Default optimized stop loss
+          ('take_profit', 0.025),
+      )
+      def __init__(self):
+          self.ema_fast = EMA(self.data.close, period=5)
+          self.ema_slow = EMA(self.data.close, period=21)
+
+2. Parameter Constraints:
+- Use parameter ranges as defined in config/optimized_params.yaml.
+- For 5-minute timeframe:
+  - EMA fast period ≤ 34
+  - EMA slow period ≤ 200
+  - RSI period between 5 and 7 for mean reversion strategies
+
+3. Risk Management:
+- Max daily loss capped at 2.5%.
+- Stop loss types allowed: fixed, trailing, volatility-based.
+- Slippage modeled as variable between 0.1% and 0.3% per trade.
+
+4. Backtesting Requirements:
+- Slippage must be applied in backtests, e.g.:
+  def apply_slippage(fill_price):
+      return fill_price * uniform(1.001, 1.003)  # 0.1%-0.3% slippage
+
+# Timeframe-Specific Rules (5-minute candles)
+
+- EMA fast period: 5 to 34
+- EMA slow period: 21 to 200
+- RSI period: 5 to 7
+- Max holding period: 4 hours (48 candles)
+- Volume filters:
+  - BTC minimum 1,000,000 USD per 5-minute candle
+  - ETH minimum 500,000 USD per 5-minute candle
+
+# Exchange Integration Standards
+
+- Binance:
+  - Use websocket for order book data.
+  - Respect REST API rate limit: 1200 requests/minute.
+  - Implement exponential backoff on 429 errors.
+
+<!-- # Code Quality & Testing
+
+- Unit tests must cover:
+  - Parameter boundary conditions.
+  - Slippage impact on performance.
+  - Edge cases such as flash crashes and volume spikes.
+- Example test requirement:
+  def test_strategy():
+      assert strategy.sharpe_ratio > 1.5 -->
+
+# Prohibited Patterns
+
+- No unhedged leverage greater than 3x.
+- No martingale position sizing.
+- No future trading.
+<!-- - Futures trading only allowed with:
+  - Circuit breakers.
+  - Funding rate monitoring. -->
+
+<!-- # CI/CD Pipeline
+
+- Backtests must pass before deployment.
+- Risk parameter validation step required.
+- Performance benchmarks must meet or exceed baseline. -->
+
+# Optimization Constraints
+
+- Parameter search space limited to fewer than 10,000 combinations.
+- Use Bayesian optimization with Expected Improvement acquisition function.
+- Parallelize optimization with up to 11 workers.
+
+# Documentation Standards
+
+- Each strategy must include:
+  - Markdown table of parameters.
+  - Backtest results summary.
+  - Volatility sensitivity analysis.

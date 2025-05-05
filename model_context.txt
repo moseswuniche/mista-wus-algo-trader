@@ -1,55 +1,61 @@
 **Project:** Mista Wus Algo Trader
 
-**Description:** A Python-based algorithmic trading bot framework designed for cryptocurrencies on Binance. It supports modular strategies, live trading via WebSockets, backtesting, parameter optimization, and forward testing. The framework includes features like configurable stop-loss, take-profit, trailing-stop-loss, max cumulative loss limits, universal ATR and Seasonality filters, configurable MA types (EMA/SMA) in strategies, Z-score based logic for LongShortStrategy, and runtime configuration reloading for the live trader.
+**Description:** A Python-based algorithmic trading bot framework for cryptocurrencies on Binance. It features a **component-based architecture** for live trading, standardized backtesting/forward testing using **`backtrader`**, parameter optimization, and state persistence. Supports modular strategies inheriting from a common `backtrader` base.
 
 **Core Components:**
-*   `src/trading_bots/trader.py`: Handles live trading logic, WebSocket management, order execution, runtime configuration (loading `runtime_config.yaml`), and applies configured filters (ATR, Seasonality). Supports **runtime reloading** of configuration if the bot is flat.
-*   `src/trading_bots/strategies/`: Directory containing strategy implementations (e.g., `LongShortStrategy`, `MACross`, `RSIReversion`, `BBReversion`), all inheriting from `base_strategy.Strategy`. Strategies now support EMA/SMA trend filters and may include specific enhancements (e.g., ATR-adjusted RSI, Z-score volume/return in LongShort).
-*   `src/trading_bots/backtest.py`: Provides the `run_backtest` function for simulating strategy performance on historical data, including **intra-bar SL/TP/TSL checks** against high/low prices and application of universal filters (ATR, Seasonality) if enabled in the `BacktestRunConfig`.
-*   `src/trading_bots/optimize.py`: Performs grid search optimization for strategy parameters defined in `config/optimize_params.yaml` (structure: `SYMBOL -> StrategyClassName -> params`).
-    *   **Efficient Combination Generation:** First, it pre-filters the grid based on command-line flags (e.g., ignores `atr_*` params if `--apply-atr-filter` is omitted). Then, it uses a smart generator to avoid creating redundant combinations based on boolean flags present *within the filtered grid* (e.g., `apply_seasonality: [true, false]`).
-    *   Uses `multiprocessing.Pool` for parallel backtests (`run_backtest_for_params`).
-    *   Saves best parameters (including strategy, risk, and filter settings) to `config/best_params.yaml` (or file specified by `--output-config`).
-    *   Saves detailed summary metrics (not full trades) to CSV in `results/optimize/details/` if `--save-details` is used.
-    *   Supports resuming (`--resume`) by checking generated parameter representations against those in the relevant details CSV.
-    *   Uses `tqdm` for progress bars.
-*   `src/trading_bots/forward_test.py`: Runs a backtest using optimized parameters (loaded from `best_params.yaml`) on a specified forward period, generating HTML reports (`reporting_utils.py`) and full trade logs (`_trades.csv` in `results/forward_test/trades/`).
-*   `src/trading_bots/run_batch_optimization.py`: Orchestrates running multiple `optimize.py` tasks in parallel for different strategy/symbol combinations, passing filter flags. (Used by `make optimize-batch`).
-*   `src/trading_bots/analyze_trades.py`: Analyzes trade logs (`_trades.csv`) or optimization detail summaries (`_optimize_details_*.csv`) to generate performance reports and plots saved to `results/analysis/`.
-*   `src/trading_bots/fetch_data.py`: Downloads historical K-line data from Binance.
-*   `src/trading_bots/technical_indicators.py`: Contains functions for calculating indicators like ATR, SMA, EMA.
-*   `src/trading_bots/config_models.py`: **NEW:** Contains Pydantic models (`OptimizeParamsConfig`, `BacktestRunConfig`, `RuntimeConfig`) for validating configuration data structures.
-*   `src/trading_bots/data_utils.py`: **NEW:** Contains helper functions for loading data (e.g., `load_csv_data`).
-*   `src/trading_bots/reporting_utils.py`: **NEW:** Contains helper functions for generating plots and HTML reports used by forward testing and analysis.
-*   `config/`: Contains YAML configuration files (`optimize_params.yaml`, `best_params.yaml`, `runtime_config.yaml`). `optimize_params.yaml` structure is `SYMBOL -> StrategyClassName -> params`.
-*   `results/`: Default directory for output (optimization details, forward test reports/trades, analysis results). Often gitignored.
-*   `results/optimize/details`: Directory containing detailed CSV optimization results (summary metrics only, not full trades).
-*   `data/`: Default directory for storing downloaded CSV market data. Often gitignored.
-*   `Makefile`: Provides convenient commands for common workflows, including flags to enable filters (`APPLY_ATR_FILTER`, `APPLY_SEASONALITY_FILTER` and `TSO_` variants) and resume (`RESUME`). Includes targets for different optimization execution methods.
+*   `src/trading_bots/trader.py`: Orchestrator for the live trading bot. Initializes and coordinates components.
+*   `src/trading_bots/trader_components/`: Contains individual components managing specific live trading aspects:
+    *   `ClientManager`: Handles Binance API client and WebSocket connection.
+    *   `DataHandler`: Fetches historical data, processes WebSocket Kline messages, prepares data (indicators/signals) via the strategy instance.
+    *   `OrderExecutor`: Executes buy/sell market orders.
+    *   `PositionManager`: Tracks position state (size, entry price), calculates PnL, handles SL/TP/TSL logic execution (via `OrderExecutor`), and logs trades.
+    *   `RiskManager`: Enforces risk limits (e.g., max cumulative loss) and interacts with `PositionManager`.
+    *   `StateManager`: Saves and loads the state of managed components (PositionManager, RiskManager, DataHandler) to/from JSON files in `results/state/`.
+    *   `RuntimeConfigManager`: Loads and periodically checks for updates in `config/runtime_config.yaml`.
+    *   `CsvTradeLogger`: Logs executed live trades to CSV files in `results/live_trades/`.
+*   `src/trading_bots/strategies/`: Directory containing strategy implementations (e.g., `MovingAverageCrossoverStrategy`, `ScalpingStrategy`, `BollingerBandReversionStrategy`, `MomentumStrategy`, `MeanReversionStrategy`, `BreakoutStrategy`, `HybridStrategy`). All inherit from `base_strategy.BaseStrategy` (which inherits from `backtrader.Strategy`).
+*   `src/trading_bots/backtest.py`: Provides the `run_backtest` function using the `backtrader` engine. Simulates strategy performance based on `BacktestRunConfig`, including intra-bar SL/TP logic, standard analyzers, optional plotting, and trade logging.
+*   `src/trading_bots/forward_test.py`: Runs `run_backtest` using optimized parameters (loaded from `*_best_params_*.yaml`) on a forward period. Generates HTML reports and trade logs.
+*   `src/trading_bots/optimize.py`: Performs grid search optimization using `run_backtest` for parallel evaluation. Reads parameter grids from `config/optimize_params.yaml`. Saves best results to individual `{metric}_best_params_*.yaml` files and optionally detailed summaries to CSV.
+*   `src/trading_bots/run_batch_forward_test.py`: Runs `forward_test.py` for all found `*_best_params_*.yaml` files.
+*   `src/trading_bots/run_batch_optimization.py`: Runs multiple `optimize.py` tasks in parallel.
+*   `src/trading_bots/fetch_data.py`: Downloads historical K-line data.
+*   `src/trading_bots/technical_indicators.py`: Indicator calculation functions.
+*   `src/trading_bots/config_models.py`: Pydantic models (`BacktestRunConfig`, `RuntimeConfig`, etc.) for configuration validation.
+*   `src/trading_bots/data_utils.py`: Data loading helpers.
+*   `src/trading_bots/reporting_utils.py`: HTML report generation.
+*   `config/`: Contains YAML configuration files (`optimize_params.yaml`, `runtime_config.yaml`). `*_best_params_*.yaml` files are generated here by `optimize.py`.
+*   `results/`: Default output directory.
+    *   `optimize/`: Optimization results (`*.yaml`, `details/*.csv`).
+    *   `forward_test/`: Forward test results (`plots/`, `reports/`, `trades/*.csv`).
+    *   `live_trades/`: Logs from the live trader (`CsvTradeLogger`).
+    *   `state/`: Persisted JSON state files from `StateManager`.
+*   `data/`: Default storage for CSV market data.
+*   `Makefile`: Provides commands for install, fetch, optimize, test, trade, lint, etc.
 
 **Key Concepts:**
-*   **STRATEGY_MAP:** **NEW:** Dictionary mapping short names (e.g., \"BBReversion\") to class names (e.g., `BollingerBandReversionStrategy`) used across scripts (`optimize.py`, `backtest.py`, utils) for consistency.
-*   **Configuration Models (`config_models.py`):** **NEW:** Pydantic models validate configuration structures read from YAML or passed between components.
-*   **Multiprocessing Logging:** **NEW:** Uses `QueueHandler` and `QueueListener` for safe logging from multiple processes during optimization.
-*   **Filtering Logic:** Universal filters (ATR, Seasonality) are configured via parameters in `optimize_params.yaml` and enabled/disabled via command-line flags/Makefile variables. The backtesting engine applies active filters based on the `BacktestRunConfig`.
+*   **Component Architecture:** Live trader (`trader.py`) delegates responsibilities to specialized components in `trader_components/`.
+*   **`backtrader` Engine:** Used for standardized backtesting and forward testing (`run_backtest`).
+*   **`BaseStrategy`:** Common base class for all strategies, inheriting from `backtrader.Strategy`, providing shared logic (logging, SL/TP price calculation, filter checks).
+*   **`BacktestRunConfig`:** Pydantic model defining configuration for `run_backtest`.
+*   **`StateManager`:** Handles persistence of live trader state across restarts.
+*   **Configuration Files:**
+    *   `optimize_params.yaml`: Defines parameter search space for optimization.
+    *   `{metric}_best_params_*.yaml`: Stores best parameters found by optimization.
+    *   `runtime_config.yaml`: Allows runtime adjustments for the live trader.
+*   **Filtering Logic:** Filters (ATR, Seasonality) are defined as parameters within strategies (`params` tuple) and enabled/configured via parameter files (`optimize_params.yaml`, `*_best_params_*.yaml`, `runtime_config.yaml`). `BaseStrategy` provides checks, and `DataHandler` may pre-calculate necessary indicators.
 
 **Key Makefile Targets & Workflow:**
-1.  `make install`: Set up environment using Poetry.
-2.  `make fetch-data`: Download historical data.
-3.  `make optimize` / `make optimize-batch` / `make trigger-threaded-optimizer`: Run parameter optimization.
-    *   Flags like `APPLY_ATR_FILTER=true` / `TSO_APPLY_ATR_FILTER=true` enable corresponding filters during optimization (parameters taken from grid).
-    *   `RESUME=true` (for `trigger-threaded-optimizer`) or `--resume` (`OPTIMIZE_ARGS`) enables skipping completed parameters based on existing details CSV files in `results/optimize/details/`.
-    *   `SAVE_DETAILS=true` / `TSO_SAVE_DETAILS=true` or `--save-details` enables saving detailed summary metrics (per combination) to CSV.
-    *   `optimize`: Single strategy/symbol, parallel internal backtests (`-p N` controls core count).
-    *   `optimize-batch`: Multiple strategy/symbol pairs run concurrently via `run_batch_optimization.py` (`PROCESSES=N` controls concurrent *optimizations*).
-    *   `trigger-threaded-optimizer`: Multiple strategy/symbol pairs run sequentially, each potentially using parallel internal backtests (`TSO_PROCESSES=N` controls cores *per task*).
-4.  `make forward-test` / `make forward-test-batch`: Run backtests on a forward period using optimized parameters from `best_params.yaml`. Filter flags (`APPLY_ATR_FILTER`, etc.) must be set if filter application (using optimized filter params) is desired. Generates reports and full *trade logs*.
-5.  `make analyze-trades` / `make analyze-details`: Analyze results from forward tests (trade logs) or optimization (summary details CSVs).
-6.  `make trader`: Run the live/simulated trading bot. Use `TRADER_ARGS` for initial configuration (overriding `runtime_config.yaml`), including filter flags (`--apply-atr-filter`, etc.). Bot reloads `runtime_config.yaml` periodically.
-7.  `make lint` / `make format`: Code quality checks.
+1.  `make install`
+2.  `make fetch-data`
+3.  `make optimize` / `make optimize-batch` / `make trigger-threaded-optimizer`: Run optimization, generating `*_best_params_*.yaml` files.
+4.  `make forward-test`: Run a single forward test using a specific `*_best_params_*.yaml` file.
+5.  `make forward-test-all`: Run forward tests for all found `*_best_params_*.yaml` files.
+6.  `make trader`: Run the live/simulated trading bot, loading parameters from a specified `*_best_params_*.yaml` file (`--param-config`) and using `config/runtime_config.yaml` for potential overrides/reloads.
+7.  `make lint` / `make format`: Code quality.
+
 **Notes:**
-*   Project uses Poetry for dependency management (Python >= 3.11).
-*   Code includes type hints and is checked with MyPy.
-*   Live trading requires API keys (env vars or AWS Secrets Manager).
-*   Be mindful of the distinction between optimization (`optimize.py`) output (summary metrics CSV if `--save-details`) and forward testing (`forward_test.py`) output (full trade logs CSV).
-*   Universal filters (ATR, Seasonality) need to be explicitly enabled via command-line arguments or Makefile variables for `optimize`, `forward-test`, and `trader` commands if their use is intended. Filter parameters themselves are generally read from config files (`optimize_params.yaml`, `best_params.yaml`, `runtime_config.yaml`).
+*   Uses Poetry (Python >= 3.11).
+*   Type hints checked with MyPy (with some necessary ignores).
+*   Live trading requires API keys.
+*   Filter parameters and risk parameters (SL/TP) are part of the strategy parameters, configured via YAML files.

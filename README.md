@@ -3,39 +3,32 @@
 This project contains various deployable and runtime configurable trading strategies for cryptocurrencies using the Binance API.
 
 Features include:
-- Strategy modularity (easily add new strategies)
-- Live trading via WebSockets (`trader.py`)
-- Configurable Stop Loss, Take Profit, and Trailing Stop Loss (`trader.py` + Backtests)
-- Configurable Max Cumulative Loss Stop for the bot (`trader.py`)
-- Backtesting engine with intra-bar SL/TP/TSL simulation (`backtest.py`)
-- Calculation of standard performance metrics (Profit, Win Rate, Sharpe Ratio, Max Drawdown, Profit Factor)
-- **Parallel** Grid search parameter optimization (`optimize.py`)
-  - Parameter grids defined in `config/optimize_params.yaml`, including SL/TP/TSL and optional trend filter.
-  - Best parameters (including SL/TP/TSL, trend filter) saved to `config/best_params.yaml`.
-  - **Efficient Generation:** Skips redundant combinations where controlling flags (e.g., `apply_atr_filter`) are False but dependent parameters vary, significantly speeding up optimization runs with filters enabled.
-  - **Command-Line Pre-Filtering:** If a filter (e.g., ATR, Seasonality) is disabled via command-line flag (e.g., by omitting `--apply-atr-filter`), parameters related to that filter in the YAML grid will be ignored entirely, further preventing unnecessary combination generation and testing.
-- **Parallel** Batch optimization for multiple strategies/symbols (`run_batch_optimization.py`) - *[Review/update completed]*
-- **Sequential** Batch optimization via `make trigger-threaded-optimizer`
-- Optimization based on selectable performance metrics
-- Simulated forward testing (`forward_test.py`) with HTML reports
+- Strategy modularity (inheriting from a common `BaseStrategy`)
+- **Component-Based Live Trading:** Live trading logic (`trader.py`) is orchestrated via distinct components (`ClientManager`, `DataHandler`, `PositionManager`, `RiskManager`, `StateManager`, etc.) for better separation of concerns.
+- Live trading via WebSockets, managed by the `ClientManager` and `DataHandler` components.
+- Configurable Stop Loss, Take Profit, and Trailing Stop Loss, managed by the `PositionManager` and `RiskManager` components.
+- Configurable Max Cumulative Loss Stop for the bot, managed by the `RiskManager`.
+- **Standardized Backtesting/Forward Testing:** Uses the `backtrader` engine (`backtest.py`) for realistic simulation, including intra-bar SL/TP/TSL checks and consistent configuration via a `BacktestRunConfig` model.
+- Calculation of standard performance metrics via `backtrader` analyzers.
+- **Parallel** Grid search parameter optimization (`optimize.py`) leveraging the `backtrader` engine.
+  - Parameter grids defined in `config/optimize_params.yaml`.
+  - Best parameters saved to individual files in `results/optimize/` named `{metric}_best_params_{symbol}_{strategy}.yaml`.
+- **Parallel** Batch optimization for multiple strategies/symbols (`run_batch_optimization.py`).
+- **Sequential** Batch optimization via `make trigger-threaded-optimizer`.
+- Optimization based on selectable performance metrics.
+- Simulated forward testing (`forward_test.py`) using the `backtrader` engine and generating HTML reports.
+- **Live Trader State Persistence:** Key component states (position, PnL, data buffer) are saved to disk (`results/state/`) allowing the bot to resume gracefully after restarts.
 - Saving of detailed optimization results (summary metrics only) to CSV, using batching.
-- Analysis of trade logs and optimization detail results (summary metrics) (`analyze_trades.py`)
-  - Generation of performance summary plots and HTML reports
-- Historical data fetching (`fetch_data.py`)
-- **Regime Filtering:** Optional MA-based trend filter (SMA or EMA) available in all standard strategies (configured via `trend_filter_period` and `trend_filter_use_ema`).
-- **Universal Filters (Backtest/Optimize/Trader):**
-  - **ATR Volatility Filter:** Avoid trades when Average True Range (ATR) is below a configurable threshold (e.g., a multiple of its SMA), useful for filtering low-volatility periods.
-  - **Seasonality Filter:** Restrict trading to specific hours of the day (UTC), useful for assets with known intraday patterns.
-- **Strategy Enhancements:**
-  - MA Crossover: Can use EMA or SMA for fast/slow lines.
-  - RSI Reversion: Option to use EMA for trend filter; option for dynamic, ATR-adjusted thresholds.
-  - BB Reversion: Option to use EMA for trend filter.
-  - Long/Short: Uses Z-scores for both returns and volume change; option for EMA/SMA trend filter.
-- Type hints and MyPy checking
-- Code formatting using Black
-- Configuration via YAML for optimization and runtime parameters
-- Logging
-- Runtime configuration reloading (strategy, parameters, SL/TP, max loss)
+- **Batch Forward Testing:** Script (`run_batch_forward_test.py`) and `make` target (`forward-test-all`) to automatically run forward tests for all optimized results found in `results/optimize/`, using the corresponding best parameter YAML files.
+- Historical data fetching (`fetch_data.py`).
+- **Universal Filters (Configured via Parameters):**
+  - **ATR Volatility Filter:** Avoid trades when Average True Range (ATR) is below a threshold (configured via strategy parameters).
+  - **Seasonality Filter:** Restrict trading to specific hours (configured via strategy parameters).
+- Type hints and MyPy checking.
+- Code formatting using Black.
+- Configuration via YAML for optimization (`optimize_params.yaml`), best parameters (`*_best_params_*.yaml`), and runtime (`runtime_config.yaml`).
+- Logging across components.
+- Runtime configuration reloading for the live trader (`runtime_config_manager.py`).
 
 ## Project Structure
 
@@ -45,46 +38,58 @@ Features include:
 ├── Makefile
 ├── README.md
 ├── config
-│   ├── optimize_params.yaml  # Parameter ranges for optimization (incl. SL/TP/TSL)
-│   ├── best_params.yaml      # Stores best parameters found (incl. SL/TP/TSL, metric) (IGNORED - generated)
-│   └── runtime_config.yaml   # Runtime configuration for the live trader (strategy, params, SL/TP)
+│   ├── optimize_params.yaml  # Parameter ranges for optimization
+│   ├── runtime_config.yaml   # Runtime configuration for the live trader (strategy, params, risk)
+│   └── ... (*_best_params_*.yaml files generated by optimize)
 ├── data                      # Default directory for CSV data (IGNORED)
 │   └── ... (CSV files)
 ├── poetry.lock
 ├── pyproject.toml
 ├── results                   # Default directory for generated results (IGNORED)
-│   ├── analysis              # Results from analyze_trades.py
-│   │   ├── plots             # Overall performance plots
-│   │   ├── reports           # HTML reports (per-group and detail summary)
-│   │   └── summary           # Aggregated summary CSV
-│   ├── optimization          # Detailed optimization CSVs
-│   │   └── ...
 │   ├── optimize            # Root directory for optimization results
-│   │   ├── details         # Detailed optimization CSVs (summary metrics only)
-│   │   └── summary         # Placeholder for potential future summary files
-│   └── forward_test          # Forward test results (plots, reports, trades)
-│       ├── plots
-│       ├── reports
-│       └── trades
+│   │   ├── *.yaml          # Individual best parameter files ({metric}_best_params_{symbol}_{strategy}.yaml)
+│   │   └── details         # Detailed optimization CSVs (summary metrics only)
+│   ├── forward_test        # Forward test results (plots, reports, trades)
+│   │   ├── plots
+│   │   ├── reports
+│   │   └── trades
+│   ├── live_trades         # CSV logs of trades executed by the live trader
+│   └── state               # Persisted state files for live trader components
 └── src
     └── trading_bots
         ├── __init__.py
-        ├── analyze_trades.py   # Script to analyze trade logs or optimization details
-        ├── backtest.py         # Backtesting logic
+        ├── backtest.py         # Backtesting logic using backtrader
+        ├── config_models.py    # Pydantic models for configuration validation
         ├── config_utils.py     # Configuration loading utilities (e.g., AWS Secrets)
+        ├── data_utils.py       # Data loading utilities
         ├── fetch_data.py       # Script to fetch historical data
-        ├── optimize.py         # Strategy parameter optimization script (single run, parallel backtests)
-        ├── forward_test.py     # Script for simulated forward testing
+        ├── forward_test.py     # Script for simulated forward testing using backtrader
+        ├── optimize.py         # Strategy parameter optimization script
         ├── reporting_utils.py  # Shared plotting and reporting functions
+        ├── run_batch_forward_test.py # Script to run forward tests for all optimized results
         ├── run_batch_optimization.py # Script to run multiple optimizations in parallel
-        ├── trader.py           # Main live trading bot class & execution
+        ├── technical_indicators.py # Indicator calculation functions
+        ├── trader.py           # Main live trading bot orchestrator
+        ├── trader_components   # Components for the live trader
+        │   ├── __init__.py
+        │   ├── client_manager.py   # Handles Binance API client & WebSocket connection
+        │   ├── data_handler.py     # Processes incoming data, calculates indicators/signals
+        │   ├── order_executor.py   # Executes orders via the client
+        │   ├── position_manager.py # Tracks current position, entry price, SL/TP/TSL logic
+        │   ├── risk_manager.py     # Enforces risk limits (max loss, etc.)
+        │   ├── runtime_config_manager.py # Handles runtime config loading/reloading
+        │   ├── state_manager.py    # Manages saving/loading component state
+        │   └── trade_logger.py     # Logs executed trades to CSV
         └── strategies
             ├── __init__.py
-            ├── base_strategy.py
-            ├── bb_reversion_strategy.py
-            ├── long_short_strategy.py
+            ├── base_strategy.py  # Base class inheriting from backtrader.Strategy
+            ├── bollinger_band_reversion_strategy.py
+            ├── breakout_strategy.py
+            ├── hybrid_strategy.py
             ├── ma_crossover_strategy.py
-            └── rsi_reversion_strategy.py
+            ├── mean_reversion_strategy.py
+            ├── momentum_strategy.py
+            └── scalping_strategy.py
 ```
 
 ## Setup
@@ -118,98 +123,86 @@ Use `make help` to see available commands and default variable values.
     # Fetch hourly ETH data from 2020:
     make fetch-data FETCH_ARGS="--symbols ETHUSDT --interval 1h --start 2020-01-01"
     ```
-*   **Run Strategy Optimization:** Optimizes parameters (including optional SL/TP/TSL, trend filter, ATR filter, Seasonality filter) using grid search based on `config/optimize_params.yaml`. Saves the best parameters to `config/best_params.yaml`.
-    *   **Single Run (Parallel Backtests):** Uses multiprocessing *within* the `optimize.py` script to speed up testing parameter combinations for *one* strategy/symbol pair.
+*   **Run Strategy Optimization:** Optimizes parameters using grid search based on `config/optimize_params.yaml`. Runs backtests using the `backtrader` engine via `run_backtest`. Saves the best parameters to individual YAML files in `results/optimize/`.
+    *   **Single Run (Parallel Backtests):**
         ```bash
-        # Optimize MACross for BTCUSDT daily data, maximizing Sharpe Ratio, saving details, using 6 cores
-        # Also apply ATR filter (params from config) and Seasonality (params from config)
-        make optimize OPTIMIZE_ARGS="--strategy MACross --symbol BTCUSDT --file data/1d/BTCUSDT_1d.csv --metric sharpe_ratio --save-details --balance 10000 --commission 7.5 -p 6 --apply-atr-filter --apply-seasonality-filter"
+        # Optimize MACrossoverStrategy for BTCUSDT daily, maximizing Sharpe, using 6 cores for backtests
+        make optimize OPTIMIZE_ARGS="--strategy MovingAverageCrossoverStrategy --symbol BTCUSDT --file data/1d/BTCUSDT_1d.csv --metric sharpe_ratio --save-details --balance 10000 --commission 7.5 -p 6"
         ```
-        *   Use the `-p N` argument within `OPTIMIZE_ARGS` to specify the number of cores for backtesting *within* this single optimization run.
-        *   Use `--apply-atr-filter` and `--apply-seasonality-filter` to enable the universal filters during optimization. Their parameters (`atr_filter_*`, `seasonality_*`) will be taken from the `config/optimize_params.yaml` grid if defined.
-    *   **Batch Run (Parallel Optimizations - `optimize-batch`):** Runs *multiple independent optimization tasks* (for different strategies and/or symbols) *concurrently* using multiprocessing managed by `run_batch_optimization.py`.
+    *   **Batch Run (Parallel Optimizations - `optimize-batch`):**
         ```bash
-        # Batch optimize RSIReversion and BBReversion for XRP/ETH hourly, minimizing Max Drawdown, applying filters
-        make optimize-batch STRATEGIES="RSIReversion BBReversion" SYMBOLS="XRPUSDT ETHUSDT" INTERVAL=1h METRIC=max_drawdown START_DATE=2020-01-01 END_DATE=2022-12-31 BALANCE=25000 COMMISSION=5 SAVE_DETAILS=true APPLY_ATR_FILTER=true APPLY_SEASONALITY_FILTER=true PROCESSES=4
+        # Batch optimize MeanReversionStrategy and BollingerBandReversionStrategy for XRP/ETH hourly
+        make optimize-batch STRATEGIES="MeanReversionStrategy BollingerBandReversionStrategy" SYMBOLS="XRPUSDT ETHUSDT" INTERVAL=1h METRIC=max_drawdown START_DATE=2020-01-01 END_DATE=2022-12-31 BALANCE=25000 COMMISSION=5 SAVE_DETAILS=true PROCESSES=4
         ```
-        *   The number of parallel optimization *processes* is controlled by the `PROCESSES` variable in the Makefile (passed to `run_batch_optimization.py`).
-        *   Use `APPLY_ATR_FILTER=true` and `APPLY_SEASONALITY_FILTER=true` Makefile variables to enable filters for all batch jobs.
-    *   **Batch Run (Sequential Trigger - `trigger-threaded-optimizer`):** Runs optimization for multiple strategy/symbol combinations *sequentially*. For each combination, it calls `make optimize`, which in turn runs `optimize.py` potentially using multiple cores for its internal backtests (controlled by `TSO_PROCESSES` variable).
+    *   **Batch Run (Sequential Trigger - `trigger-threaded-optimizer`):**
         ```bash
-        # Sequentially optimize RSIReversion and BBReversion for XRP/ETH hourly, applying filters, using TSO_ variables
-        make trigger-threaded-optimizer TSO_STRATEGIES="RSIReversion BBReversion" TSO_SYMBOLS="XRPUSDT ETHUSDT" TSO_INTERVAL=1h TSO_METRIC=sharpe_ratio TSO_BALANCE=5000 TSO_SAVE_DETAILS=true TSO_PROCESSES=4 TSO_APPLY_ATR_FILTER=true TSO_APPLY_SEASONALITY_FILTER=true RESUME=true
+        # Sequentially optimize MeanReversionStrategy and BollingerBandReversionStrategy for XRP/ETH hourly
+        make trigger-threaded-optimizer TSO_STRATEGIES="MeanReversionStrategy BollingerBandReversionStrategy" TSO_SYMBOLS="XRPUSDT ETHUSDT" TSO_INTERVAL=1h TSO_METRIC=sharpe_ratio TSO_BALANCE=5000 TSO_SAVE_DETAILS=true TSO_PROCESSES=4 RESUME=true
         ```
-        *   The `TSO_PROCESSES` variable controls the number of cores used by the underlying `optimize.py` script for *each* sequential optimization task.
-        *   Use `TSO_APPLY_ATR_FILTER=true` and `TSO_APPLY_SEASONALITY_FILTER=true` Makefile variables.
-        *   Provides a `tqdm` progress bar showing completion status, rate, and ETA for each optimization task.
-    *   Configure parameter search ranges, including filters (`atr_*`, `seasonality_*`), risk management (`stop_loss_pct`, etc.), and strategy specifics, in `config/optimize_params.yaml`. Structure is `SYMBOL -> StrategyClassName -> params`.
-    *   Specify the optimization target using `METRIC=` or `TSO_METRIC=` (Makefile variables) or `--metric` (`OPTIMIZE_ARGS`). Choices: `cumulative_profit`, `final_balance`, `sharpe_ratio`, `profit_factor`, `max_drawdown`, `win_rate`.
-    *   Use `SAVE_DETAILS=true` or `TSO_SAVE_DETAILS=true` (Makefile variables) or `--save-details` (`OPTIMIZE_ARGS`) to save summary metrics for all tested combinations to a CSV file in `results/optimize/details/`.
-    *   Use `--resume` (or `RESUME=true` in `trigger-threaded-optimizer`) to skip parameters already present in the latest matching details file in `results/optimize/details/` for that strategy/symbol/date range.
-    *   Set initial balance using `BALANCE=` or `TSO_BALANCE=` or `--balance`.
-    *   Best parameters (including filters, SL/TP/TSL, and trend filter choice) are saved to `--output-config` (default: `config/best_params.yaml`).
-*   **Run Simulated Forward Test:** Runs the backtester using the best parameters found during optimization (from `config/best_params.yaml`) on a *different* historical data period. Generates reports and saves **full trade logs**.
-    *   **Single Run:**
+    *   Configure parameter search ranges in `config/optimize_params.yaml`. Filters (ATR, Seasonality) and risk parameters (SL/TP) are now defined *within* the strategy parameter grid if they are intended to be optimized or controlled per strategy.
+    *   Specify optimization target using `METRIC=`/`TSO_METRIC=` or `--metric`.
+    *   Use `SAVE_DETAILS=true`/`TSO_SAVE_DETAILS=true` or `--save-details` to save summary metrics CSV.
+    *   Use `--resume` (or `RESUME=true`) to resume optimization.
+    *   Set initial balance using `BALANCE=`/`TSO_BALANCE=` or `--balance`.
+    *   Best parameters saved to `{metric}_best_params_{symbol}_{strategy}.yaml` in `results/optimize/`.
+*   **Run Simulated Forward Test:** Runs the `backtrader` engine using the best parameters found during optimization (loaded from individual YAML files) on a *different* historical data period. Generates reports and saves **full trade logs**.
+    *   **Single Run:** Uses `make forward-test FWD_ARGS=\"...\"`. Requires specifying the exact `--param-config` file. Filter/risk parameters are loaded from the specified YAML.
         ```bash
-        # Test optimized MACross for BTCUSDT on data from 2023-01-01 onwards, applying filters based on best_params.yaml
-        make forward-test FWD_ARGS="--strategy MACross --symbol BTCUSDT --file data/1d/BTCUSDT_1d.csv --fwd-start 2023-01-01 --balance 10000 --commission 7 --apply-atr-filter --apply-seasonality-filter"
+        # Test optimized MACrossoverStrategy for BTCUSDT on data from 2023-01-01 onwards
+        make forward-test FWD_ARGS=\"--strategy MovingAverageCrossoverStrategy --symbol BTCUSDT --file data/1d/BTCUSDT_1d.csv --param-config results/optimize/sharpe_ratio_best_params_BTCUSDT_MovingAverageCrossoverStrategy.yaml --fwd-start 2023-01-01 --balance 10000 --commission 7.5\"
         ```
-    *   **Batch Run (Sequential):**
+    *   **Batch Run (All Optimized Results):** Uses `make forward-test-all`. Automatically finds all `*_best_params_*.yaml` files and runs forward tests. Filter/risk parameters loaded from each file.
         ```bash
-        # Batch test RSIReversion for multiple symbols sequentially, applying filters
-        make forward-test-batch STRATEGIES="RSIReversion" SYMBOLS="BTCUSDT ETHUSDT" FWD_START_DATE=2023-01-01 BALANCE=50000 APPLY_ATR_FILTER=true APPLY_SEASONALITY_FILTER=true
+        # Run forward tests for ALL optimized results using default settings
+        make forward-test-all
+
+        # Run forward tests only for results optimized for \'sharpe_ratio\' on XRPUSDT
+        make forward-test-all TARGET_METRIC_ALL=sharpe_ratio INCLUDE_SYMBOLS_ALL=\"XRPUSDT\" FWD_START_ALL=2024-01-01
         ```
-    *   Requires optimized parameters (incl. SL/TP/TSL, filters) to exist in `--param-config` (default: `config/best_params.yaml`).
-    *   **Important:** Filters (`--apply-atr-filter`, `--apply-seasonality-filter`) must be explicitly enabled in `FWD_ARGS` or the Makefile variables (`APPLY_ATR_FILTER`, `APPLY_SEASONALITY_FILTER`) if you want to use the optimized filter settings during the forward test. The script reads the *best* parameters for the filters from the config, but only applies them if the corresponding flag is passed.
-    *   Set initial balance using `BALANCE=` or `--balance`.
-    *   Generates HTML reports (with metrics and plots) in `results/forward_test/reports/`.
-    *   Saves detailed **trade logs** (`_trades.csv`) in `results/forward_test/trades/`.
-*   **Analyze Results:** Analyze trade logs or optimization detail files.
+    *   Generates HTML reports in `results/forward_test/reports/` and trade logs in `results/forward_test/trades/`.
+*   **Analyze Results:** [DEPRECATED/REMOVED] The `analyze-trades.py` script has been removed. Analysis is primarily done via the generated HTML reports from forward testing or by examining the optimization detail CSVs.
+*   **Run Live/Simulated Trader (Testnet by Default):** Orchestrates the trader components. Initial strategy, symbol, interval, and units are required arguments. Runtime parameters (including strategy parameters, risk settings like SL/TP/MaxLoss, and filter settings) are loaded from the file specified by `--param-config` (typically a `best_params` file) and can be reloaded via `--runtime-config` (default `config/runtime_config.yaml`). **Note:** Command-line overrides for SL/TP/MaxLoss/Filters are **removed**; configure these via the loaded parameter files.
     ```bash
-    # Analyze all forward test trade logs found in results/forward_test/trades/ and generate reports/plots
-    make analyze-trades 
-    # Analyze optimization detail summary CSVs found in results/optimize/details/ and generate summary report/plot
-    make analyze-details
-    # Analyze only a specific strategy/symbol trade log
-    make analyze-trades ANALYZE_ARGS="--strategy RSIReversion --symbol BTCUSDT"
-    ```
-    *   Output saved to `results/analysis/`.
-*   **Run Live/Simulated Trader (Testnet by Default):**
-    ```bash
-    # Run default strategy/symbol defined in TRADER_ARGS
-    make trader 
-    # Run ETHUSDT with 5m interval, testnet, specific SL/TP/TSL/MaxLoss, and ATR filter
-    make trader TRADER_ARGS="--symbol ETHUSDT --strategy MACross --interval 5m --units 0.01 --stop-loss 0.015 --trailing-stop-loss 0.01 --max-cum-loss 500 --testnet --apply-atr-filter --atr-filter-period 20 --atr-filter-multiplier 1.8"
-    # Run LIVE (USE WITH EXTREME CAUTION) with Seasonality Filter
-    make trader TRADER_ARGS="--symbol BTCUSDT --strategy RSIReversion --interval 1h --units 0.001 --no-testnet --stop-loss 0.02 --apply-seasonality-filter --allowed-trading-hours-utc 8-16"
+    # Run ETHUSDT with 5m interval, testnet, loading optimized params
+    make trader TRADER_ARGS=\"--symbol ETHUSDT --strategy MovingAverageCrossoverStrategy --interval 5m --units 0.01 --param-config results/optimize/sharpe_ratio_best_params_ETHUSDT_MovingAverageCrossoverStrategy.yaml --commission-bps 7.5 --testnet\"
+
+    # Run LIVE (USE WITH EXTREME CAUTION)
+    make trader TRADER_ARGS=\"--symbol BTCUSDT --strategy MeanReversionStrategy --interval 1h --units 0.001 --param-config results/optimize/profit_factor_best_params_BTCUSDT_MeanReversionStrategy.yaml --commission-bps 7.5 --no-testnet\"
     ```
     *   Requires API keys (via env vars or AWS).
-    *   Use `--stop-loss`, `--take-profit`, `--trailing-stop-loss`, `--max-cum-loss` to enable risk management.
-    *   Use `--apply-atr-filter` and related `--atr-filter-*` arguments to enable and configure the ATR filter.
-    *   Use `--apply-seasonality-filter` and `--allowed-trading-hours-utc` (and optionally `--apply-seasonality-to-symbols`) to enable and configure the seasonality filter.
-    *   **Runtime Configuration:** Edit the `--runtime-config` file (default: `config/runtime_config.yaml`) to change `strategy_name`, `strategy_params`, risk management settings, and *filter settings* (`apply_atr_filter`, `atr_*`, `apply_seasonality_filter`, `allowed_trading_hours_utc`, etc.). Changes are checked periodically and applied if the bot is flat (not in position).
+    *   Use `--commission-bps` to set commission (default 7.5 = 0.075%).
+    *   **Runtime Configuration:** Edit the `--runtime-config` file (default: `config/runtime_config.yaml`) to change `strategy_name`, `strategy_params`, risk management settings (`stop_loss_pct`, `take_profit_pct`, `trailing_stop_loss_pct`, `max_cumulative_loss`), and filter settings (`apply_atr_filter`, `atr_*`, `apply_seasonality_filter`, `allowed_trading_hours_utc`, etc.). Changes are checked periodically by `RuntimeConfigManager` and applied if the bot is flat.
+    *   **State Persistence:** Bot state (position, PnL, data buffer) is automatically saved/loaded from `results/state/` by the `StateManager`.
 *   **Linting:** `make lint`
-*   **Formatting:** `make format` (Runs Black code formatter)
+*   **Formatting:** `make format`
 *   **Clean:** `make clean`
 
 ## Output Files
 
-*   `config/best_params.yaml`: Stores the best parameters found by optimization for each symbol/strategy combination.
-*   `results/optimization/`: Contains detailed CSV logs of *all* combinations tested during optimization if `SAVE_DETAILS=true` is used.
-*   `results/optimization/details/`: Contains detailed CSV logs (**summary metrics** only) of *all* combinations tested during optimization if `SAVE_DETAILS=true` is used.
-*   `results/forward_test/reports/`: Contains HTML reports summarizing forward test performance, including metrics and equity curve plots.
-*   `results/forward_test/plots/`: PNG images of equity curves from forward tests.
-*   `results/forward_test/trades/`: CSV files detailing the **individual trades** made during each forward test.
-*   `results/analysis/`: Contains aggregated summaries, plots, and reports generated by `analyze-trades` and `analyze-details`.
+*   `results/optimize/`: Contains optimization results.
+    *   `{metric}_best_params_{symbol}_{strategy}.yaml`: Stores the best parameters and metrics found by optimization. Includes strategy, risk, and filter parameters used.
+    *   `details/`: Contains detailed CSV logs (summary metrics only) if `SAVE_DETAILS=true` is used.
+*   `results/forward_test/reports/`: HTML reports summarizing forward test performance.
+*   `results/forward_test/plots/`: PNG equity curves from forward tests.
+*   `results/forward_test/trades/`: CSV files detailing individual trades during forward tests.
+*   `results/live_trades/`: CSV files logging trades executed by the live trader.
+*   `results/state/`: JSON files containing the persisted state of live trader components.
 
 ## Adding New Strategies
 
 1.  Create a new Python file in `src/trading_bots/strategies/` (e.g., `my_strategy.py`).
-2.  Define a class inheriting from `src.trading_bots.strategies.base_strategy.Strategy`.
-3.  Implement the `__init__` method to accept parameters.
-4.  Implement the `generate_signals(self, data: pd.DataFrame) -> pd.DataFrame` method. It should add a `signal` column (1=long, -1=short, 0=neutral) to the input DataFrame and return the modified DataFrame.
-5.  Add the new strategy class name to the `STRATEGY_MAP` dictionary in `src/trading_bots/optimize.py`, `src/trading_bots/backtest.py`, and any relevant utility scripts.
-6.  Add parameter search ranges to `config/optimize_params.yaml` under the desired symbols, using the new strategy's **class name** as the key.
+2.  Define a class inheriting from `src.trading_bots.strategies.base_strategy.BaseStrategy` (which inherits from `backtrader.Strategy`).
+3.  Define strategy parameters (including any filters or risk parameters like SL/TP if they should be strategy-specific) using the `params = (...)` class attribute tuple, providing defaults.
+4.  Implement the `__init__(self)` method:
+    *   Call `super().__init__()`.
+    *   Define necessary `backtrader` indicators.
+    *   Store references to data feeds (e.g., `self.dataclose = self.datas[0].close`).
+5.  Implement the `next(self)` method:
+    *   Define the core trading logic (buy/sell conditions) based on indicators.
+    *   Use `self.buy()`, `self.sell()`, `self.close()` etc. to place orders.
+    *   Utilize methods from `BaseStrategy` for common tasks like checking filters (`self.is_trade_allowed()`), logging (`self.log()`), SL/TP setup (`self._get_sl_tp_prices()`), etc. *Do not* implement SL/TP order logic directly here; `BaseStrategy` handles notifications and `PositionManager` handles execution.
+6.  Add the new strategy class to the `STRATEGY_CLASS_MAP` dictionary in `src/trading_bots/optimize.py`, `src/trading_bots/forward_test.py`, and `src/trading_bots/trader.py`.
+7.  Add parameter search ranges to `config/optimize_params.yaml` under the desired symbols, using the new strategy's **class name** as the key. Include ranges for any base parameters (like `stop_loss_pct`, `apply_atr_filter`, etc.) that you want to optimize for this specific strategy.
 
 ## License
 

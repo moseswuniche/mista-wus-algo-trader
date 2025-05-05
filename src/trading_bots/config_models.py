@@ -136,6 +136,10 @@ class BacktestRunConfig(BaseModel):
         None  # Comma-separated symbols, empty means apply to main symbol
     )
 
+    # --- File Paths (Optional) ---
+    plot_path: Optional[str] = None  # Path to save the backtrader plot
+    trade_list_output_path: Optional[str] = None  # Path to save the trade list CSV
+
     @field_validator("allowed_trading_hours_utc")
     def validate_trading_hours(cls, v, values):
         data = values.data  # Access other field values if needed

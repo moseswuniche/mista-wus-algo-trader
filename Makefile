@@ -18,11 +18,11 @@ PYTHON = .venv/bin/python
 POETRY = poetry
 
 # Define the python command to be used with poetry run
-# This avoids the need to specify the full path to the venv python
 PYTHON_CMD = python
 
 # Variables for batch optimization (override on command line)
-STRATEGIES ?= BBReversion # Space-separated strategy list (e.g., "BBReversion RSIReversion")
+# Use Full Class Names for Strategies
+STRATEGIES ?= BollingerBandReversionStrategy # Space-separated strategy list (e.g., "BollingerBandReversionStrategy MovingAverageCrossoverStrategy")
 SYMBOLS    ?= XRPUSDT BTCUSDT # Space-separated symbol list (e.g., "XRPUSDT BTCUSDT ETHUSDT")
 INTERVAL   ?= 1h
 START_DATE ?= 2017-01-01
@@ -40,44 +40,18 @@ SAVE_DETAILS   ?= false    # Save detailed optimization results (true/false)
 DETAILS_FILE   ?=          # Optional path for detailed results CSV (default is auto-generated)
 PROCESSES      ?= 12 # Default number of processes for backtesting within optimize
 CONFIG         ?= config/optimize_params.yaml # Default config file path for optimize
-BEST_PARAMS_FILE ?= results/optimize/best_params.yaml # Default best params file path for optimize
-
-# --- Filter Parameters (Defaults) ---
-# These can be overridden for optimize, optimize-batch, forward-test, etc.
-APPLY_ATR_FILTER ?= false
-ATR_FILTER_PERIOD ?= 14
-ATR_FILTER_MULTIPLIER ?= 1.5
-ATR_FILTER_SMA_PERIOD ?= 100
-APPLY_SEASONALITY_FILTER ?= false
-ALLOWED_TRADING_HOURS_UTC ?= "" # e.g., '5-17'
-APPLY_SEASONALITY_TO_SYMBOLS ?=  # Ensure this defaults to completely empty
-# --- End Filter Parameters ---
-
-# Default number of processes for fetching data
-FETCH_PROCESSES ?= 6
-
-# Arguments for single runs (override completely on command line)
-# OPTIMIZE_ARGS is no longer used by the optimize target directly, but kept for reference/manual runs if needed
-OPTIMIZE_ARGS ?= --strategy RSIReversion --symbol BTCUSDT --file data/1h/BTCUSDT_1h.csv --metric cumulative_profit --balance 10000 --commission 7.5 --opt-start 2021-01-01 --opt-end 2022-12-31 # Default example
-FWD_ARGS      ?= --strategy RsiMeanReversionStrategy --symbol BTCUSDT --file data/1h/BTCUSDT_1h.csv --fwd-start 2021-01-01 --balance 10000 --commission 7.5 \
-                 # --apply-atr-filter --atr-filter-period 14 --atr-filter-multiplier 1.5 --atr-filter-sma-period 100 \
-                 # --apply-seasonality-filter --allowed-trading-hours-utc '5-17' --apply-seasonality-to-symbols 'XRPUSDT,SOLUSDT'
-FETCH_ARGS    ?= # Default empty, provide args like --symbols BTCUSDT --interval 1h
-TRADER_ARGS   ?= --strategy RsiMeanReversionStrategy --symbol XRPUSDT --interval 1h --units 0.1 --testnet \
-                 # --stop-loss 0.02 --take-profit 0.05 --trailing-stop-loss 0.01 --max-cum-loss 100 \
-                 # --apply-atr-filter --atr-filter-period 14 --atr-filter-multiplier 1.5 --atr-filter-sma-period 100 \
-                 # --apply-seasonality-filter --allowed-trading-hours-utc '5-17' --apply-seasonality-to-symbols 'XRPUSDT,SOLUSDT'
+# BEST_PARAMS_FILE is no longer used as input argument, output path is now fixed within optimize.py
+# BEST_PARAMS_FILE ?= results/optimize/best_params.yaml
 
 # === Additions for Threaded Strategy Optimizer ===
 
 # Define the lists of symbols and strategies for threaded-strategy-optimizer
-# Override these on the command line if needed, e.g.:
-# make threaded-strategy-optimizer TSO_SYMBOLS="BTCUSDT SOLUSDT" TSO_STRATEGIES="MACross"
+# Use Full Class Names for Strategies
 TSO_SYMBOLS ?= BTCUSDT ETHUSDT ADAUSDT SOLUSDT # Example List for threaded optimizer
-TSO_STRATEGIES ?= LongShort MACross RSIReversion BBReversion # Example List for threaded optimizer
+TSO_STRATEGIES ?= MovingAverageCrossoverStrategy ScalpingStrategy BollingerBandReversionStrategy MomentumStrategy MeanReversionStrategy BreakoutStrategy HybridStrategy # Use full class names
 
 # Define other parameters used by 'make optimize' for the threaded-strategy-optimizer target - allow overrides
-# Ensure these match the variables your 'make optimize' target expects
+# ... (TSO vars remain mostly the same, BEST_PARAMS_FILE removed from here too) ...
 TSO_START_DATE ?= 2023-01-01
 TSO_END_DATE ?= 2023-12-31
 TSO_INTERVAL ?= 1h
@@ -88,15 +62,8 @@ TSO_METRIC ?= cumulative_profit # Default optimization metric
 TSO_CONFIG ?= config/optimize_params.yaml # Default config file
 TSO_SAVE_DETAILS ?= true # Default to save details
 TSO_DETAILS_FILE ?= # Default to auto-generated details file name
-TSO_BEST_PARAMS_FILE ?= results/optimize/best_params.yaml # Default output for best params
-# Add TSO Filter Vars (using defaults from above if not set)
-TSO_APPLY_ATR_FILTER ?= $(APPLY_ATR_FILTER)
-TSO_ATR_FILTER_PERIOD ?= $(ATR_FILTER_PERIOD)
-TSO_ATR_FILTER_MULTIPLIER ?= $(ATR_FILTER_MULTIPLIER)
-TSO_ATR_FILTER_SMA_PERIOD ?= $(ATR_FILTER_SMA_PERIOD)
-TSO_APPLY_SEASONALITY_FILTER ?= $(APPLY_SEASONALITY_FILTER)
-TSO_ALLOWED_TRADING_HOURS_UTC ?= $(ALLOWED_TRADING_HOURS_UTC)
-TSO_APPLY_SEASONALITY_TO_SYMBOLS ?= $(APPLY_SEASONALITY_TO_SYMBOLS)
+# TSO_BEST_PARAMS_FILE removed
+# TSO Filter Vars REMOVED
 
 # Phony target to run optimization for all combinations via repeated 'make optimize' calls
 .PHONY: trigger-threaded-optimizer
@@ -118,26 +85,19 @@ trigger-threaded-optimizer:
 			echo ""; \
 			echo "--- Running Optimizer Task: Strategy=$${strategy}, Symbol=$${symbol} ---"; \
 			$(MAKE) optimize \
-				STRATEGY=$${strategy} \
-				SYMBOL=$${symbol} \
-				INTERVAL=$(TSO_INTERVAL) \
-				START_DATE=$(TSO_START_DATE) \
-				END_DATE=$(TSO_END_DATE) \
-				COMMISSION=$(TSO_COMMISSION) \
-				BALANCE=$(TSO_BALANCE) \
-				PROCESSES=$(TSO_PROCESSES) \
-				METRIC=$(TSO_METRIC) \
-				CONFIG=$(TSO_CONFIG) \
-				SAVE_DETAILS=$(TSO_SAVE_DETAILS) \
-				DETAILS_FILE=$(TSO_DETAILS_FILE) \
-				BEST_PARAMS_FILE=$(TSO_BEST_PARAMS_FILE) \
-				APPLY_ATR_FILTER=$(TSO_APPLY_ATR_FILTER) \
-				ATR_FILTER_PERIOD=$(ATR_FILTER_PERIOD) \
-				ATR_FILTER_MULTIPLIER=$(ATR_FILTER_MULTIPLIER) \
-				ATR_FILTER_SMA_PERIOD=$(ATR_FILTER_SMA_PERIOD) \
-				APPLY_SEASONALITY_FILTER=$(TSO_APPLY_SEASONALITY_FILTER) \
-				ALLOWED_TRADING_HOURS_UTC='$(TSO_ALLOWED_TRADING_HOURS_UTC)' \
-				APPLY_SEASONALITY_TO_SYMBOLS='$(TSO_APPLY_SEASONALITY_TO_SYMBOLS)' \
+				STRATEGY="$${strategy}" \ /* Pass full class name */
+				SYMBOL="$${symbol}" \
+				INTERVAL="$(TSO_INTERVAL)" \
+				START_DATE="$(TSO_START_DATE)" \
+				END_DATE="$(TSO_END_DATE)" \
+				COMMISSION="$(TSO_COMMISSION)" \
+				BALANCE="$(TSO_BALANCE)" \
+				PROCESSES="$(TSO_PROCESSES)" \
+				METRIC="$(TSO_METRIC)" \
+				CONFIG="$(TSO_CONFIG)" \
+				SAVE_DETAILS="$(TSO_SAVE_DETAILS)" \
+				$(if $(TSO_DETAILS_FILE),DETAILS_FILE="$(TSO_DETAILS_FILE)") \
+				$(if $(RESUME),RESUME=true) \ # Pass RESUME if set for TSO
 				LOG_LEVEL=DEBUG; \
 			if [ $$? -ne 0 ]; then \
 				echo "!!! Optimizer Task failed for Strategy=$${strategy}, Symbol=$${symbol} !!!"; \
@@ -150,7 +110,7 @@ trigger-threaded-optimizer:
 
 # === End of Additions ===
 
-.PHONY: install run lint test optimize optimize-batch fetch-data forward-test forward-test-batch all clean help trader analyze-trades analyze-details format trigger-threaded-optimizer analyze-forward-trades
+.PHONY: install run lint test optimize optimize-batch fetch-data forward-test forward-test-batch all clean help trader analyze-details format trigger-threaded-optimizer analyze-forward-trades forward-test-all
 
 # Default target
 all: install lint
@@ -159,18 +119,14 @@ all: install lint
 install:
 	@echo "Installing dependencies using Poetry..."
 	$(POETRY) install --with dev
+	@echo "Installation complete. Ensure backtrader and matplotlib are included in pyproject.toml"
 
 ## Run the live/simulated trading bot
 trader:
 	@echo "Running the trading bot (use TRADER_ARGS=... for options)"
-	# Add --no-testnet for live trading! Add SL/TP args as needed.
+	# Assumes trader.py loads config/params similarly to forward_test.py
 	# Example:
-	#   make trader TRADER_ARGS=" \
-	#     --symbol ETHUSDT --interval 5m --units 0.01 \
-	#     --strategy MACross --stop-loss 0.02 --trailing-stop-loss 0.01 \
-	#     --apply-atr-filter --atr-filter-multiplier 2.0 \
-	#     --apply-seasonality-filter --allowed-trading-hours-utc '9-21' --apply-seasonality-to-symbols 'ETHUSDT' \
-	#     --no-testnet" # (Note: TRADER_ARGS uses a single string, internal newlines might need adjusting based on shell)
+	#   make trader TRADER_ARGS="--strategy MovingAverageCrossoverStrategy --symbol ETHUSDT --interval 5m --units 0.01 --no-testnet"
 	$(POETRY) run $(PYTHON_CMD) -m src.trading_bots.trader $(TRADER_ARGS)
 
 ## Run static type checking with mypy
@@ -188,16 +144,15 @@ test:
 	@echo "Running tests... (No tests implemented yet)"
 
 ## Run strategy optimization (single run)
-# All parameters are passed directly from Make variables to the script using native Make conditionals
-# Removed check-data-file prerequisite (handled in trigger-threaded-optimizer)
+# Updated to use full class name for --strategy
+# Removed --output-config argument
 optimize:
 	@echo "Running strategy optimization: Strategy=$(STRATEGY), Symbol=$(SYMBOL), Interval=$(INTERVAL)"
 	$(POETRY) run $(PYTHON_CMD) -m src.trading_bots.optimize \
-		--strategy "$(STRATEGY)" \
+		--strategy "$(STRATEGY)" \ /* Use full class name */
 		--symbol "$(SYMBOL)" \
 		--file "data/$(INTERVAL)/$(SYMBOL)_$(INTERVAL).csv" \
 		--config "$(CONFIG)" \
-		--output-config "$(BEST_PARAMS_FILE)" \
 		--opt-start "$(START_DATE)" \
 		--opt-end "$(END_DATE)" \
 		--balance $(BALANCE) \
@@ -206,18 +161,11 @@ optimize:
 		$(if $(filter true,$(SAVE_DETAILS)),--save-details) \
 		$(if $(DETAILS_FILE),--details-file "$(DETAILS_FILE)") \
 		--processes $(PROCESSES) \
-		$(if $(filter true,$(APPLY_ATR_FILTER)),--apply-atr-filter) \
-		--atr-filter-period $(ATR_FILTER_PERIOD) \
-		--atr-filter-multiplier $(ATR_FILTER_MULTIPLIER) \
-		--atr-filter-sma-period $(ATR_FILTER_SMA_PERIOD) \
-		$(if $(filter true,$(APPLY_SEASONALITY_FILTER)),--apply-seasonality-filter) \
-		--allowed-trading-hours-utc "$(ALLOWED_TRADING_HOURS_UTC)" \
-		--apply-seasonality-to-symbols "$(APPLY_SEASONALITY_TO_SYMBOLS)" \
 		$(if $(filter true,$(RESUME)),--resume) \
 		--log $(or $(LOG_LEVEL),INFO)
 
 ## Run strategy optimization for multiple strategies and symbols
-# Passes Make variables to the batch runner script using native Make conditionals
+# No changes needed here if run_batch_optimization.py accepts args as before
 optimize-batch:
 	@echo "Running parallel batch strategy optimization..."
 	@echo "Strategies: $(STRATEGIES), Symbols: $(SYMBOLS), Interval: $(INTERVAL)"
@@ -234,144 +182,73 @@ optimize-batch:
 		--processes $(PROCESSES) \
 		$(if $(filter true,$(SAVE_DETAILS)),--save-details) \
 		$(if $(DETAILS_FILE),--details-file "$(DETAILS_FILE)") \
-		$(if $(filter true,$(APPLY_ATR_FILTER)),--apply-atr-filter) \
-		--atr-filter-period $(ATR_FILTER_PERIOD) \
-		--atr-filter-multiplier $(ATR_FILTER_MULTIPLIER) \
-		--atr-filter-sma-period $(ATR_FILTER_SMA_PERIOD) \
-		$(if $(filter true,$(APPLY_SEASONALITY_FILTER)),--apply-seasonality-filter) \
-		--allowed-trading-hours-utc "$(ALLOWED_TRADING_HOURS_UTC)" \
-		--apply-seasonality-to-symbols "$(APPLY_SEASONALITY_TO_SYMBOLS)"
+		$(if $(filter true,$(RESUME)),--resume) \
+		$(if $(TARGET_METRIC),--target-metric "$(TARGET_METRIC)") \
+		$(if $(OPTIMIZATION_METRIC_PREFIX),--optimization-metric-prefix "$(OPTIMIZATION_METRIC_PREFIX)") \
+		$(if $(INCLUDE_SYMBOLS),--include-symbols "$(INCLUDE_SYMBOLS)")
 	@echo "Parallel batch optimization finished."
 
 ## Fetch historical data from Binance
 fetch-data:
 	@echo "Fetching historical data from Binance (use FETCH_ARGS=...)"
-	# Example: make fetch-data FETCH_ARGS=" \
-	#   --symbols 'BTCUSDT ETHUSDT XRPUSDT' \
-	#   --interval 1d \
-	#   --start '2017-01-01' \
-	#   --end '2024-01-01' \
-	#   --data-dir ./historical_data" # (Note: FETCH_ARGS uses a single string)
-	$(POETRY) run $(PYTHON_CMD) -m src.trading_bots.fetch_data $(FETCH_ARGS) --processes $(FETCH_PROCESSES)
+	# Example: make fetch-data FETCH_ARGS="--symbols 'BTCUSDT ETHUSDT XRPUSDT' --interval 1h --start 2020-01-01 --processes 4"
+	$(POETRY) run $(PYTHON_CMD) -m src.trading_bots.fetch_data $(FETCH_ARGS)
 
-## Run simulated forward test (single run)
+## Run forward test (single run)
+# Updated to use full class name for --strategy
+# Removed filter arguments
 forward-test:
-	@echo "Running simulated forward test (use FWD_ARGS=...)"
-	# Example: make forward-test FWD_ARGS=\" \
-	#   --strategy BBReversion \
-	#   --symbol ETHUSDT \
-	#   --file data/1h/ETHUSDT_1h.csv \
-	#   --fwd-start 2023-08-18 \
-	#   --commission 7.5 \
-	#   --balance 1000 \
-	#   --param-config results/optimize/best_params.yaml \
-	#   --apply-atr-filter \
-	#   --apply-seasonality-filter \" # (Note: FWD_ARGS uses a single string)
-	$(POETRY) run $(PYTHON_CMD) -m src.trading_bots.forward_test $(FWD_ARGS)
+	@echo "Running forward test: Strategy=$(STRATEGY), Symbol=$(SYMBOL), ParamFile=$(PARAM_CONFIG)"
+	$(POETRY) run $(PYTHON_CMD) -m src.trading_bots.forward_test \
+		--strategy "$(STRATEGY)" \ /* Use full class name */
+		--symbol "$(SYMBOL)" \
+		--param-config "$(PARAM_CONFIG)" \ /* Requires path to specific best params file */
+		--file "$(DATA_DIR)/$(INTERVAL)/$(SYMBOL)_$(INTERVAL).csv" \
+		--fwd-start "$(FWD_START_DATE)" \
+		$(if $(FWD_END_DATE),--fwd-end "$(FWD_END_DATE)") \
+		--balance $(BALANCE) \
+		--commission $(COMMISSION) \
+		--units $(or $(UNITS),1.0) \
+		--log $(or $(LOG_LEVEL),INFO)
 
-## Run forward testing for multiple strategies and symbols
-# Passes Make variables explicitly in the loop using native Make conditionals
+## Run forward tests for all optimized results
 forward-test-batch:
-	@echo "Running batch forward testing..."; \
-	echo "Strategies: $(STRATEGIES)"; \
-	echo "Symbols   : $(SYMBOLS)"; \
-	echo "Interval  : $(INTERVAL)"; \
-	echo "Fwd Dates : $(FWD_START_DATE) to $(FWD_END_DATE)"; \
-	echo "Commission: $(COMMISSION) bps"; \
-	echo "Balance   : $(BALANCE)"; \
-	for strategy in $(STRATEGIES); do \
-	    for symbol in $(SYMBOLS); do \
-	        file_path=\"data/$(INTERVAL)/$${symbol}_$(INTERVAL).csv\"; \
-	        if [ -f \"$${file_path}\" ]; then \
-	            echo \"\"; \
-	            echo \"--- Fwd Testing: Strategy=$${strategy}, Symbol=$${symbol}, File=$${file_path} ---\"; \
-	            $(POETRY) run $(PYTHON_CMD) -m src.trading_bots.forward_test \
-	                --strategy $${strategy} \
-	                --symbol $${symbol} \
-	                --file $${file_path} \
-	                --param-config \"$(BEST_PARAMS_FILE)\" \
-	                --fwd-start $(FWD_START_DATE) \
-	                --fwd-end $(FWD_END_DATE) \
-	                --commission $(COMMISSION) \
-	                --balance $(BALANCE) \
-	                --units 1.0 \
-	                $(if $(filter true,$(APPLY_ATR_FILTER)),--apply-atr-filter) \
-	                --atr-filter-period $(ATR_FILTER_PERIOD) \
-	                --atr-filter-multiplier $(ATR_FILTER_MULTIPLIER) \
-	                --atr-filter-sma-period $(ATR_FILTER_SMA_PERIOD) \
-	                $(if $(filter true,$(APPLY_SEASONALITY_FILTER)),--apply-seasonality-filter) \
-	                --allowed-trading-hours-utc '$(ALLOWED_TRADING_HOURS_UTC)' \
-	                --apply-seasonality-to-symbols '$(APPLY_SEASONALITY_TO_SYMBOLS)'; \
-	        else \
-	            echo ""; \
-	            echo "--- Skipping Fwd Test: Strategy=$${strategy}, Symbol=$${symbol} - File not found: $${file_path} ---"; \
-	        fi; \
-	    done; \
-	done; \
-	echo ""; \
-	echo "Batch forward testing finished."
+	@echo "Running batch forward tests..."
+	$(POETRY) run $(PYTHON_CMD) -m src.trading_bots.run_batch_forward_test \
+		--results-dir "$(or $(OPTIMIZE_RESULTS_DIR),results/optimize)" \
+		--data-dir "$(DATA_DIR)" \
+		--start-date "$(FWD_START_DATE)" \
+		$(if $(FWD_END_DATE),--end-date "$(FWD_END_DATE)") \
+		--balance $(BALANCE) \
+		--commission $(COMMISSION) \
+		--units $(or $(UNITS),1.0) \
+		--interval "$(INTERVAL)" \
+		--log $(or $(LOG_LEVEL),INFO) \
+		$(if $(TARGET_METRIC),--target-metric "$(TARGET_METRIC)") \
+		$(if $(OPTIMIZATION_METRIC_PREFIX),--optimization-metric-prefix "$(OPTIMIZATION_METRIC_PREFIX)") \
+		$(if $(INCLUDE_SYMBOLS),--include-symbols "$(INCLUDE_SYMBOLS)")
 
-## Clean up Python bytecode and caches
-clean:
-	@echo "Cleaning up Python bytecode and cache files..."
-	find . -type f -name "*.py[co]" -delete
-	find . -type d -name "__pycache__" -delete
-	rm -rf .mypy_cache
-	rm -rf .pytest_cache
-	# Optionally clean results directories
-	# rm -rf results/
-
-## Display help information
-help:
-	@echo "Available commands:"
-	@echo "  make install        - Install project dependencies"
-	@echo "  make trader         - Run the live/simulated trading bot (use TRADER_ARGS=...)"
-	@echo "                      Example: make trader TRADER_ARGS=\"\"
-	@echo "                      \\  --symbol ETHUSDT --interval 5m --units 0.01 \\"
-	@echo "                      \\  --strategy MACross --stop-loss 0.02 --trailing-stop-loss 0.01 \\"
-	@echo "                      \\  --apply-atr-filter --atr-filter-multiplier 2.0 \\"
-	@echo "                      \\  --apply-seasonality-filter --allowed-trading-hours-utc '9-21' --apply-seasonality-to-symbols 'ETHUSDT' \\"
-	@echo "                      \\  --no-testnet \""
-	@echo "  make lint           - Run mypy static type checker"
-	@echo "  make test           - Run tests (placeholder)"
-	@echo "  make optimize       - Run single strategy optimization (use make VAR=value overrides)"
-	@echo "                      Example: make optimize STRATEGY=BBReversion SYMBOL=SOLUSDT METRIC=sharpe_ratio SAVE_DETAILS=true"
-	@echo "  make optimize-batch - Run batch optimization for multiple strategies/symbols (use make VAR=value overrides)"
-	@echo "                      Example: make optimize-batch STRATEGIES=\"BBReversion MACross\" SYMBOLS=\"SOLUSDT ADAUSDT\" METRIC=profit_factor SAVE_DETAILS=true"
-	@echo "  make fetch-data     - Fetch historical data from Binance (use FETCH_ARGS=... and FETCH_PROCESSES=N)"
-	@echo "                      Example: make fetch-data FETCH_ARGS=\"--symbols 'BTCUSDT ETHUSDT' --interval 1d --start '2017-01-01'\" FETCH_PROCESSES=8"
-	@echo "  make forward-test   - Run single simulated forward test (use FWD_ARGS=...)"
-	@echo "                      Example: make forward-test FWD_ARGS=\"--strategy MACross --balance 25000 --apply-atr-filter\""
-	@echo "  make forward-test-batch - Run batch forward testing for multiple strategies/symbols (use make VAR=value overrides)"
-	@echo "                      Example: make forward-test-batch STRATEGIES=\"RSIReversion\" SYMBOLS=\"XRPUSDT LTCUSDT\" APPLY_ATR_FILTER=true"
-	@echo "  make all            - Install dependencies and run linter (default)"
-	@echo "  make clean          - Remove Python bytecode and cache files"
-	@echo "  make help           - Show this help message"
-	@echo "  make analyze-trades - Analyze trade logs and generate reports/plots"
-	@echo "  make analyze-details - Analyze optimization detail summary files"
-
-# Analyze individual trade logs (_trades.csv) and generate full reports/plots
-analyze-trades:
-	@echo "--- Running Analysis on Trade Logs (results/optimize/trades/) ---"
-	$(POETRY) run python -m src.trading_bots.analyze_trades --results-dir results/optimize --plotting
-	@echo "--- Finished Trade Log Analysis ---"
-
-# Analyze optimization detail summaries (_optimize_details_*.csv) 
+## Analyze optimization details CSV (if saved)
 analyze-details:
-	@echo "--- Running Analysis on Optimization Details (results/optimize/) ---"
-	$(POETRY) run python -m src.trading_bots.analyze_trades --analyze-details --plotting
-	@echo "--- Finished Optimization Detail Analysis ---"
+	@echo "Analyzing optimization details CSV... (Requires --details-file argument)"
+	# Add implementation or call to analysis script here
+	@echo "(Not implemented yet)"
 
-# Analyze forward test trade logs (_trades.csv)
-analyze-forward-trades:
-	@echo "--- Running Analysis on Forward Test Trade Logs (results/forward_test/trades/) ---"
-	$(POETRY) run python -m src.trading_bots.analyze_trades --results-dir results/forward_test --plotting
-	@echo "--- Finished Forward Test Trade Log Analysis ---"
+## Clean up generated files
+clean:
+	@echo "Cleaning up generated files..."
+	find . -name '__pycache__' -type d -exec rm -rf {} +
+	find . -name '*.pyc' -delete
+	find . -name '*.pyo' -delete
+	rm -rf .mypy_cache .pytest_cache .coverage
+	rm -rf results/optimize/*.yaml results/optimize/*.csv results/optimize/plots/*.png results/optimize/reports/*.html
+	rm -rf results/forward_test/*.yaml results/forward_test/trades/*.csv results/forward_test/plots/*.png results/forward_test/reports/*.html
+	# Removed analyze_trades related cleaning
+	@echo "Cleanup finished."
 
-# --- Helper Targets ---
-# Internal target to check if data file exists for optimize/forward-test
-# If not found, attempts to fetch data for the specific symbol/interval
-.PHONY: check-data-file
-check-data-file:
-	@# Logic moved to trigger-threaded-optimizer loop
-	@echo "Data check bypassed (handled in loop)." 
+## Show help messages for targets
+help:
+	@echo "Available targets:"
+	@grep -E '^##' Makefile | sed -e 's/## //g' | column -t -s ':' | sed -e 's/^/    /'
+
+# Removed analyze-trades target 
